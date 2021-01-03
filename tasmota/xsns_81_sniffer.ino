@@ -38,10 +38,9 @@ namespace XSNS81 {
     int8_t RSSI;
     int8_t publishedRSSI;
     uint8_t secondsCounter;
-    uint64_t lastseen;  // last seen us
+    uint32_t lastseen;  // last seen us
     uint16_t maxAge;    // maximum observed age of this device
   };
-
   
   // seen devices
   #define MAX_XSNS81_DEVICES_LOGGED 40
@@ -63,7 +62,7 @@ namespace XSNS81 {
   int addSeenDevice(const uint8_t *mac, int8_t RSSI){
 
     int res = 0;
-    uint64_t now = millis();
+    uint32_t now = millis();
 #ifdef ESP32    
     TasAutoMutex localmutex(&DevicesMutex, "DevAdd");
 #endif
@@ -124,7 +123,7 @@ namespace XSNS81 {
   // set ageS to 0 to delete all...
   int deleteSeenDevices(int ageS = 0){
     int res = 0;
-    uint64_t now = millis();
+    uint32_t now = millis();
     now = now/1000L;
     uint32_t nowS = (uint32_t)now;   
     uint32_t mintime = nowS - ageS;
@@ -135,10 +134,11 @@ namespace XSNS81 {
 #endif
       for (int i = seenDevices.size()-1; i >= 0; i--){
           XSNS81::SNIFF_simple_device_t* dev = seenDevices[i];
-          uint64_t lastseen = dev->lastseen/1000L;
+          uint32_t lastseen = dev->lastseen/1000L;
           uint32_t lastseenS = (uint32_t) lastseen; 
           uint32_t del_at = lastseenS + ageS;
-          uint32_t devAge = nowS - lastseenS;
+          int32_t devAge = nowS - lastseenS;
+          if (devAge < 0) devAge = 0;
           if (dev->maxAge < devAge){
             dev->maxAge = devAge;
           }
@@ -230,9 +230,10 @@ namespace XSNS81 {
   void
   wifi_sniffer_packet_handler(void* buff, wifi_promiscuous_pkt_type_t type)
   {
-
-    if (type != WIFI_PKT_MGMT)
+    if (type != WIFI_PKT_DATA)
       return;
+    //if (type != WIFI_PKT_MGMT)
+    //  return;
 
     const wifi_promiscuous_pkt_t *ppkt = (wifi_promiscuous_pkt_t *)buff;
     const wifi_ieee80211_packet_t *ipkt = (wifi_ieee80211_packet_t *)ppkt->payload;
@@ -304,6 +305,18 @@ namespace XSNS81 {
   //https://github.com/kalanda/esp8266-sniffer/blob/master/src/main.cpp
   void ICACHE_FLASH_ATTR sniffer_callback(uint8_t *buffer, uint16_t length) {
     struct SnifferPacket *snifferPacket = (struct SnifferPacket*) buffer;
+    unsigned int frameControl = ((unsigned int)snifferPacket->data[1] << 8) + snifferPacket->data[0];
+
+    //uint8_t version      = (frameControl & 0b0000000000000011) >> 0;
+    uint8_t frameType    = (frameControl & 0b0000000000001100) >> 2;
+    //uint8_t frameSubType = (frameControl & 0b0000000011110000) >> 4;
+    //uint8_t toDS         = (frameControl & 0b0000000100000000) >> 8;
+    //uint8_t fromDS       = (frameControl & 0b0000001000000000) >> 9;
+
+    // Only look for probe request packets
+    if (frameType != TYPE_DATA) {
+      return;
+    }
     uint8_t *mac = snifferPacket->data+10;
     addSeenDevice(mac, snifferPacket->rx_ctrl.rssi);
   }
@@ -321,18 +334,19 @@ namespace XSNS81 {
   }
 
   #ifdef USE_WEBSERVER
-  const char HTTP_SNIFF_mac[] PROGMEM = "{s}WIFI-MAC : %s" " {m} RSSI:%d age %u(%u)" "{e}";
+  const char HTTP_SNIFF_mac[] PROGMEM = "{s}WIFI-MAC : %s" " {m} RSSI:%d age %d(%d)" "{e}";
 
   void SniffShow(){
-    uint64_t now = millis();
+    uint32_t now = millis();
     now = now/1000L;
     uint32_t nowS = (uint32_t)now;   
     int count = seenDevices.size();
     for (int i = 0; i < count; i++){
       XSNS81::SNIFF_simple_device_t* dev = seenDevices[i];
-      uint64_t lastseen = dev->lastseen/1000L;
+      uint32_t lastseen = dev->lastseen/1000L;
       uint32_t lastseenS = (uint32_t) lastseen; 
-      uint32_t devAge = nowS - lastseenS;
+      int32_t devAge = nowS - lastseenS;
+      if (devAge < 0) devAge = 0; 
       char addr[20];
       ToHex_P(dev->mac, 6, addr, 20, 0);
       WSContentSend_PD(HTTP_SNIFF_mac,addr,dev->RSSI, devAge, dev->maxAge);
@@ -341,19 +355,19 @@ namespace XSNS81 {
   #endif
 
   void sniff_mqtt(XSNS81::SNIFF_simple_device_t* dev, int lost) {
-    uint64_t now = millis();
+    uint32_t now = millis();
     now = now/1000L;
     uint32_t nowS = (uint32_t)now;   
-    uint64_t lastseen = dev->lastseen/1000L;
+    uint32_t lastseen = dev->lastseen/1000L;
     uint32_t lastseenS = (uint32_t) lastseen; 
-    uint32_t devAge = nowS - lastseenS;
+    int32_t devAge = nowS - lastseenS;
     char addr[20];
     ToHex_P(dev->mac, 6, addr, 20, 0);
     dev->publishedRSSI = dev->RSSI;
     dev->secondsCounter = 0;
 
-    ResponseTime_P(PSTR(",\"WIFISNIF\":{\"MAC\":\"%s\",\"RSSI\":%d,\"STATE\":\"%s\"}}"),
-      addr,dev->RSSI, lost? "OFF":"ON");
+    ResponseTime_P(PSTR(",\"WIFISNIF\":{\"MAC\":\"%s\",\"RSSI\":%d,\"STATE\":\"%s\",\"AGE\":\"%d\"}}"),
+      addr,dev->RSSI, lost? "OFF":"ON", devAge);
     MqttPublishTeleSensor();
   }
 
