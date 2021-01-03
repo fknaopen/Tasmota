@@ -53,6 +53,7 @@ namespace XSNS81 {
   int SnifMQTTInterval = 30;
   int DeviceLimitReached = 0;
   int MinRSSI = -70;
+  int RSSIHysteresis = -5;
   int SnifRSSIChange = 10;
 
 
@@ -143,13 +144,13 @@ namespace XSNS81 {
             dev->maxAge = devAge;
           }
 
-          if ((del_at < nowS) || (ageS == 0) || (dev->RSSI < MinRSSI)) {
+          if ((del_at < nowS) || (ageS == 0) || (dev->RSSI < (MinRSSI - RSSIHysteresis))) {
             char addr[20];
             ToHex_P(dev->mac, 6, addr, 20, 0);
             //const char *alias = BLE_ESP32::getAlias(dev->mac);
             if (dev->RSSI < MinRSSI) {
               AddLog_P(LOG_LEVEL_INFO,PSTR("SNIFF delete device %s by RSSI %d < %d"), 
-                addr, dev->RSSI, MinRSSI);
+                addr, dev->RSSI, (MinRSSI - RSSIHysteresis));
             } else {
               AddLog_P(LOG_LEVEL_INFO,PSTR("SNIFF delete device %s by age lastseen %u + maxage %u < now %u."), 
                 addr, lastseenS, ageS, nowS);
