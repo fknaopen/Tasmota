@@ -1,6 +1,8 @@
 /*
   xsns_81_sniffer.ino - Test wifi sniffing
 
+  NOTE: on esp8266, you can't USE wifi AND sniff at the same time!
+
   Copyright (C) 2021  Simon Hailes
 
   This program is free software: you can redistribute it and/or modify
@@ -31,7 +33,7 @@
 
 
 
-namespace XSNS81 {
+namespace WIFI_SNIFF {
 
   struct SNIFF_simple_device_t {
     uint8_t mac[6];
@@ -56,8 +58,26 @@ namespace XSNS81 {
   int RSSIHysteresis = -5;
   int SnifRSSIChange = 10;
 
+  int SnifEnable = 0;
 
-  void sniff_mqtt(XSNS81::SNIFF_simple_device_t* dev, int lost);
+  int pktCount = 0;
+
+
+  #define D_CMND_SNIFF "SNIFF"
+  const char kSNIFF_Commands[] PROGMEM = D_CMND_SNIFF "|"
+  "Enable";
+
+  static void CmndSniffEnable(void);
+
+  void (*const SNIFF_Commands[])(void) PROGMEM = {
+    &WIFI_SNIFF::CmndSniffEnable,
+  };
+
+
+
+
+
+  void sniff_mqtt(WIFI_SNIFF::SNIFF_simple_device_t* dev, int lost);
 
 
   int addSeenDevice(const uint8_t *mac, int8_t RSSI){
@@ -86,7 +106,7 @@ namespace XSNS81 {
         int total = seenDevices.size();
         if (total < MAX_XSNS81_DEVICES_LOGGED){
           AddLog_P(LOG_LEVEL_INFO,PSTR("new seendev slot %d"), total);
-          XSNS81::SNIFF_simple_device_t* dev = new XSNS81::SNIFF_simple_device_t;
+          WIFI_SNIFF::SNIFF_simple_device_t* dev = new WIFI_SNIFF::SNIFF_simple_device_t;
           freeDevices.push_back(dev);
         } else {
           // flag we hit the limit
@@ -99,7 +119,7 @@ namespace XSNS81 {
 
       // get a new device from the free list
       if (freeDevices.size()){
-        XSNS81::SNIFF_simple_device_t* dev = freeDevices[0];
+        WIFI_SNIFF::SNIFF_simple_device_t* dev = freeDevices[0];
         freeDevices.erase(freeDevices.begin());
         memcpy(dev->mac, mac, 6);
         dev->lastseen = now; 
@@ -134,7 +154,7 @@ namespace XSNS81 {
       TasAutoMutex localmutex(&DevicesMutex, "DevDel");
 #endif
       for (int i = seenDevices.size()-1; i >= 0; i--){
-          XSNS81::SNIFF_simple_device_t* dev = seenDevices[i];
+          WIFI_SNIFF::SNIFF_simple_device_t* dev = seenDevices[i];
           uint32_t lastseen = dev->lastseen/1000L;
           uint32_t lastseenS = (uint32_t) lastseen; 
           uint32_t del_at = lastseenS + ageS;
@@ -176,7 +196,7 @@ namespace XSNS81 {
 #endif
     for (int i = 0; i < seenDevices.size(); i++){
       if (!memcmp(seenDevices[i]->mac, mac, 6)){
-        XSNS81::SNIFF_simple_device_t* dev = seenDevices[i];
+        WIFI_SNIFF::SNIFF_simple_device_t* dev = seenDevices[i];
         seenDevices.erase(seenDevices.begin()+i);
         freeDevices.push_back(dev);
 #ifdef ESP32    
@@ -305,6 +325,8 @@ namespace XSNS81 {
 
   //https://github.com/kalanda/esp8266-sniffer/blob/master/src/main.cpp
   void ICACHE_FLASH_ATTR sniffer_callback(uint8_t *buffer, uint16_t length) {
+    pktCount++;
+    return;
     struct SnifferPacket *snifferPacket = (struct SnifferPacket*) buffer;
     unsigned int frameControl = ((unsigned int)snifferPacket->data[1] << 8) + snifferPacket->data[0];
 
@@ -326,10 +348,18 @@ namespace XSNS81 {
   void init(){
 #ifdef ESP32    
     esp_wifi_set_promiscuous_rx_cb(&wifi_sniffer_packet_handler);
-    esp_wifi_set_promiscuous(true);
+    if (SnifEnable){
+      esp_wifi_set_promiscuous(true);
+    } else {
+      esp_wifi_set_promiscuous(false);
+    }
 #else
     wifi_set_promiscuous_rx_cb(&sniffer_callback);
-    wifi_promiscuous_enable(1);
+    if (SnifEnable){
+      wifi_promiscuous_enable(1);
+    } else {
+      wifi_promiscuous_enable(0);
+    }
 #endif
     //Serial.printf("i");
   }
@@ -343,7 +373,7 @@ namespace XSNS81 {
     uint32_t nowS = (uint32_t)now;   
     int count = seenDevices.size();
     for (int i = 0; i < count; i++){
-      XSNS81::SNIFF_simple_device_t* dev = seenDevices[i];
+      WIFI_SNIFF::SNIFF_simple_device_t* dev = seenDevices[i];
       uint32_t lastseen = dev->lastseen/1000L;
       uint32_t lastseenS = (uint32_t) lastseen; 
       int32_t devAge = nowS - lastseenS;
@@ -355,7 +385,7 @@ namespace XSNS81 {
   }
   #endif
 
-  void sniff_mqtt(XSNS81::SNIFF_simple_device_t* dev, int lost) {
+  void sniff_mqtt(WIFI_SNIFF::SNIFF_simple_device_t* dev, int lost) {
     uint32_t now = millis();
     now = now/1000L;
     uint32_t nowS = (uint32_t)now;   
@@ -375,7 +405,7 @@ namespace XSNS81 {
   void everySecond(){
     int count = seenDevices.size();
     for (int i = 0; i < count; i++){
-      XSNS81::SNIFF_simple_device_t* dev = seenDevices[i];
+      WIFI_SNIFF::SNIFF_simple_device_t* dev = seenDevices[i];
       dev->secondsCounter++;
       if (dev->secondsCounter > SnifMQTTInterval){
         sniff_mqtt(dev, 0);
@@ -385,6 +415,16 @@ namespace XSNS81 {
         }
       }
     }
+    if (SnifEnable){
+      AddLog_P(LOG_LEVEL_INFO,PSTR("SNIFF %d"), 
+                pktCount);
+    }
+  }
+
+
+  void CmndSniffEnable(void){
+    SnifEnable = XdrvMailbox.index;
+    ResponseCmndNumber(SnifEnable);
   }
 
 }
@@ -400,16 +440,20 @@ bool Xsns81(uint8_t function) {
     } break;
 
     case FUNC_EVERY_SECOND:{
-      XSNS81::init();
-      XSNS81::checkDeviceTimouts();
-      XSNS81::everySecond();
+      WIFI_SNIFF::init();
+      WIFI_SNIFF::checkDeviceTimouts();
+      WIFI_SNIFF::everySecond();
     }break;
 
     case FUNC_EVERY_250_MSECOND:
       break;
+    case FUNC_COMMAND:
+      result = DecodeCommand(WIFI_SNIFF::kSNIFF_Commands, WIFI_SNIFF::SNIFF_Commands);
+      break;
+      
 #ifdef USE_WEBSERVER
     case FUNC_WEB_SENSOR:
-      XSNS81::SniffShow();
+      WIFI_SNIFF::SniffShow();
       break;
 #endif  // USE_WEBSERVER
   }
