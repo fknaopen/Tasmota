@@ -45,7 +45,7 @@
       BLEOp9 - publish the 'operation in preparation' to MQTT.
       BLEOp10 - add the 'operation in preparation' to the queue of operations to perform.
 
-  Other drivers can add callbacks to receive advertisments
+  Other drivers can add callbacks to receive advertisements
   Other drivers can add 'operations' to be performed and receive callbacks from the operation's success or failure
 
 Example:
@@ -72,7 +72,7 @@ void registerForOpCallbacks(char *loggingtag, OPCOMPLETE_CALLBACK* pFn);
 bool extQueueOperation(generic_sensor_t** op);
 
 These allow other code to
-  receive advertisments
+  receive advertisements
   receive operation callbacks.
   create and start an operation, and get a callback when done/failed.
 
@@ -202,7 +202,7 @@ struct generic_sensor_t {
 
 
 ////////////////////////////////////////////////////////////////
-// structure for callbacks from other drivers from advertisments.
+// structure for callbacks from other drivers from advertisements.
 struct ble_advertisment_t {
   BLEAdvertisedDevice *advertisedDevice; // the full NimBLE advertisment, in case people need MORE info.
   uint32_t totalCount; 
@@ -267,8 +267,8 @@ const char * getStateString(int state);
 
 static void BLEDiag();
 const char *getAlias(uint8_t *addr);
-void BLEAliasMqttList();
-
+//void BLEAliasMqttList();
+void BLEAliasListResp();
 ////////////////////////////////////////////////////////////////////////
 // utilities
 // dump a binary to hex
@@ -399,7 +399,7 @@ std::deque<BLE_ESP32::BLE_simple_device_t*> freeDevices;
 
 
 
-// list of registered callbacks for advertisments
+// list of registered callbacks for advertisements
 // register using void registerForAdvertismentCallbacks(const char *somename ADVERTISMENT_CALLBACK* pFN);
 std::deque<BLE_ESP32::ADVERTISMENT_CALLBACK*> advertismentCallbacks;
 
@@ -722,7 +722,8 @@ uint32_t devicePresent(uint8_t *mac){
   )
 int getSeenDeviceToJson(int index, BLE_ESP32::BLE_simple_device_t* dev, char **dest, int *maxlen){
   char *p = *dest;
-  if (*maxlen < MIN_REQUIRED_DEVJSON_LEN){
+  // add 20 to be sure
+  if (*maxlen < MIN_REQUIRED_DEVJSON_LEN+20){
     return 0;
   }
   // add mac as key
@@ -782,7 +783,6 @@ int getSeenDeviceToJson(int index, BLE_ESP32::BLE_simple_device_t* dev, char **d
 int nextSeenDev = 0;
 
 int getSeenDevicesToJson(char *dest, int maxlen){
-  int res = 0;
 
   if ((nextSeenDev == 0) || (nextSeenDev >= seenDevices.size())){
     nextSeenDev = 0;
@@ -794,7 +794,7 @@ int getSeenDevicesToJson(char *dest, int maxlen){
 
   int len;
   if (!maxlen) return 0;
-  strcpy((dest), "{\"active\":{");
+  strcpy((dest), ",\"BLEDevices\":{");
   len = strlen(dest);
   dest += len;
   maxlen -= len;
@@ -814,7 +814,7 @@ int getSeenDevicesToJson(char *dest, int maxlen){
         *(dest++) = ',';
         maxlen--;
       }
-      res += getSeenDeviceToJson(nextSeenDev, seenDevices[nextSeenDev], &dest, &maxlen);
+      int res = getSeenDeviceToJson(nextSeenDev, seenDevices[nextSeenDev], &dest, &maxlen);
       if (res) {
         added++;
       } else {
@@ -1251,7 +1251,7 @@ class BLEAdvCallbacks: public NimBLEAdvertisedDeviceCallbacks {
       }
     }
 
-    // call anyone who asked about advertisments
+    // call anyone who asked about advertisements
     for (int i = 0; i < advertismentCallbacks.size(); i++) {
       try {
         ADVERTISMENT_CALLBACK* pFN;
@@ -1696,7 +1696,7 @@ static void BLETaskRunCurrentOperation(BLE_ESP32::generic_sensor_t** pCurrentOpe
 
 
   // if we managed to run operations back to back with long connection timeouts,
-  // then we may NOT see advertisments.
+  // then we may NOT see advertisements.
   // so to prevent triggering of the advert timeout restart mechanism, 
   // set the last advert time each time we start an operation
   uint64_t now = esp_timer_get_time();
@@ -2051,6 +2051,7 @@ static void BLEOperationTask(void *pvParameters){
       BLE_ESP32::BLETaskStopStartNimBLE(&pClient);
       BLERestartTasmotaReason = BLE_RESTART_TEAMOTA_REASON_UNKNOWN;
       BLERestartTasmota = 0;
+      BLEResets ++;
     }
   }
 
@@ -2078,10 +2079,10 @@ static void BLEOperationTask(void *pvParameters){
  * 
 \***********************************************************************/
 void BLEEvery50mSecond(){
-  if (BLEAliasListTrigger){
+/*  if (BLEAliasListTrigger){
     BLEAliasListTrigger = 0;
     BLEAliasMqttList();
-  }
+  }*/
   postAdvertismentDetails();
 }
 
@@ -2438,10 +2439,8 @@ void CmndBLEAdv(void){
 // BLEAdv1 -> send MQTT about devices found after each scan
 void CmndBLEDebug(void){
   BLEDebugMode = XdrvMailbox.index;
-  AddLog_P(LOG_LEVEL_INFO,PSTR("BLEDEbug set to %d"), XdrvMailbox.index);
-  ResponseCmndDone();
+  ResponseCmndNumber(BLEDebugMode);
 }
-
 
 void CmndBLEDevices(void){
   switch(XdrvMailbox.index){
@@ -2595,7 +2594,7 @@ void CmndBLEDetails(void){
   switch(XdrvMailbox.index){
     case 0:
       BLEDetailsRequest = 0;
-      ResponseCmndDone();
+      ResponseCmndNumber(BLEDetailsRequest);
       break;
 
     case 1:
@@ -2603,7 +2602,7 @@ void CmndBLEDetails(void){
       BLEDetailsRequest = 0;
       if (getAddr(BLEDetailsMac, XdrvMailbox.data)){
         BLEDetailsRequest = XdrvMailbox.index;
-        ResponseCmndDone();
+        ResponseCmndIdxChar(XdrvMailbox.data);
       } else {
         ResponseCmndChar("InvalidMac");
       }
@@ -2611,7 +2610,7 @@ void CmndBLEDetails(void){
 
     case 3:{
       BLEDetailsRequest = XdrvMailbox.index;
-      ResponseCmndDone();
+      ResponseCmndNumber(BLEDetailsRequest);
     } break;
 
     default:
@@ -2651,7 +2650,16 @@ void CmndBLEAlias(void){
         p = strtok(nullptr, " ,=");
         char *name = p;
         if (!p || !(*p)){
-          ResponseCmndChar("invalidname");
+          int i = 0;
+          for (i = 0; i < aliases.size(); i++){
+            BLE_ESP32::ble_alias_t *alias = aliases[i];
+            if (!memcmp(alias->addr, addr, 6)){
+              aliases.erase(aliases.begin() + i);
+              BLEAliasListResp();
+              return;
+            }
+          }
+          ResponseCmndChar("invalidmac");
           return;
         }
 
@@ -2664,11 +2672,9 @@ void CmndBLEAlias(void){
 
       if (added){
         if (BLEDebugMode > 0) AddLog_P(LOG_LEVEL_DEBUG,PSTR("Added %d Aliases"), added);
-        ResponseCmndDone();
-        BLEAliasListTrigger = 1;
+        BLEAliasListResp();
       } else {
-        ResponseCmndDone();
-        BLEAliasListTrigger = 1;
+        BLEAliasListResp();
       }
       return;
     } break;
@@ -2679,8 +2685,7 @@ void CmndBLEAlias(void){
         aliases.pop_back();
         delete alias;
       }
-      ResponseCmndDone();
-      BLEAliasListTrigger = 1;
+      BLEAliasListResp();
       return;
     } break;
   }
@@ -2932,9 +2937,15 @@ void CmndBLEOperation(void){
 static void BLEPostMQTTSeenDevices(int type) {
   int remains = 0;
   nextSeenDev = 0;
+
+  ResponseTime_P(PSTR(""));
+  int timelen = strlen(TasmotaGlobal.mqtt_data);
+  char *dest = TasmotaGlobal.mqtt_data + timelen;
+  int maxlen = (sizeof(TasmotaGlobal.mqtt_data)-20) - timelen;
+
 //  if (!TasmotaGlobal.ota_state_flag){
   do {
-    remains = getSeenDevicesToJson(TasmotaGlobal.mqtt_data, sizeof(TasmotaGlobal.mqtt_data));
+    remains = getSeenDevicesToJson(dest, maxlen);
     // no retain - this is present devices, not historic
     if (type == 1){
       MqttPublishPrefixTopic_P(TELE, PSTR("BLE"), 0);
@@ -3144,7 +3155,7 @@ static void BLEShow(bool json)
     uint32_t totalCount = BLEAdvertisment.totalCount;
     uint32_t deviceCount = seenDevices.size();
 
-    ResponseAppend_P(PSTR(",\"BLE\":{\"scans\":%u,\"advertisments\":%u,\"devices\":%u,\"resets\":%u}"), BLEScanCount, totalCount, deviceCount, BLEResets);
+    ResponseAppend_P(PSTR(",\"BLE\":{\"scans\":%u,\"adverts\":%u,\"devices\":%u,\"resets\":%u}"), BLEScanCount, totalCount, deviceCount, BLEResets);
   }
 #ifdef USE_WEBSERVER
   else {
@@ -3154,7 +3165,7 @@ static void BLEShow(bool json)
     
 }
 
-void BLEAliasMqttList(){
+/*void BLEAliasMqttList(){
   ResponseTime_P(PSTR(",\"BLEAlias\":["));
   for (int i = 0; i < aliases.size(); i++){
     if (i){
@@ -3166,14 +3177,28 @@ void BLEAliasMqttList(){
   }
   ResponseAppend_P(PSTR("]}"));
   MqttPublishPrefixTopic_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
+}*/
+
+void BLEAliasListResp(){
+  Response_P(PSTR("{\"BLEAlias\":{"));
+  for (int i = 0; i < aliases.size(); i++){
+    if (i){
+      ResponseAppend_P(PSTR(","));
+    }
+    char tmp[20];
+    ToHex_P(aliases[i]->addr,6,tmp,20,0);
+    ResponseAppend_P(PSTR("\"%s\":\"%s\""), tmp, aliases[i]->name);
+  }
+  ResponseAppend_P(PSTR("}}"));
 }
+
 
 static void BLEDiag()
 {
   uint32_t totalCount = BLEAdvertisment.totalCount;
   uint32_t deviceCount = seenDevices.size();
 #ifdef BLE_ESP32_DEBUG        
-  if (BLEDebugMode > 0) AddLog_P(LOG_LEVEL_INFO,PSTR("BLE:scans:%u,advertisments:%u,devices:%u,resets:%u,BLEStop:%d,BLERunning:%d,BLERunningScan:%d,BLELoopCount:%u,BLEOpCount:%u"), BLEScanCount, totalCount, deviceCount, BLEResets, BLEStop, BLERunning, BLERunningScan, BLELoopCount, BLEOpCount);
+  if (BLEDebugMode > 0) AddLog_P(LOG_LEVEL_INFO,PSTR("BLE:scans:%u,advertisements:%u,devices:%u,resets:%u,BLEStop:%d,BLERunning:%d,BLERunningScan:%d,BLELoopCount:%u,BLEOpCount:%u"), BLEScanCount, totalCount, deviceCount, BLEResets, BLEStop, BLERunning, BLERunningScan, BLELoopCount, BLEOpCount);
 #endif    
 }
 
