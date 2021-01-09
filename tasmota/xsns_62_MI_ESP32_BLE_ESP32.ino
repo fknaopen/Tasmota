@@ -583,9 +583,10 @@ int genericBatReadFn(int slot){
       res = MI32Operation(slot, OP_BATT_READ, CGD1_Svc, CGD1_BattChar);
       break;
 
-    case MI_MJ_HT_V1:
-      res = MI32Operation(slot, OP_BATT_READ, CGD1_Svc, CGD1_BattChar);
-      break;
+// this was for testing only - it does work, but no need to read as we get good bat in advert
+//    case MI_MJ_HT_V1:
+//      res = MI32Operation(slot, OP_BATT_READ, CGD1_Svc, CGD1_BattChar);
+//      break;
 
     default:
       res = -10; // no need to read
