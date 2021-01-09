@@ -361,7 +361,7 @@ int EQ3GenericOpCompleteFn(BLE_ESP32::generic_sensor_t *op){
       BLE_ESP32::ReverseMAC(addrev);
 
       EQ3Operation(addrev, op->dataToWrite, op->writelen);
-      EQ3ParseOp(op, false, retries);
+      //EQ3ParseOp(op, false, retries);
       AddLog_P(LOG_LEVEL_ERROR,PSTR("trv operation failed - retrying %d"), op->state);
     } else {
       retries = 0;
