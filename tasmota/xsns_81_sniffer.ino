@@ -55,7 +55,7 @@ namespace WIFI_SNIFF {
   int SnifMQTTInterval = 30;
   int DeviceLimitReached = 0;
   int MinRSSI = -70;
-  int RSSIHysteresis = -5;
+  int RSSIHysteresis = 5;
   int SnifRSSIChange = 10;
 
   int SnifEnable = 0;
@@ -168,12 +168,12 @@ namespace WIFI_SNIFF {
             char addr[20];
             ToHex_P(dev->mac, 6, addr, 20, 0);
             //const char *alias = BLE_ESP32::getAlias(dev->mac);
-            if (dev->RSSI < MinRSSI) {
+            if (dev->RSSI < (MinRSSI - RSSIHysteresis)) {
               AddLog_P(LOG_LEVEL_INFO,PSTR("SNIFF delete device %s by RSSI %d < %d"), 
                 addr, dev->RSSI, (MinRSSI - RSSIHysteresis));
             } else {
-              AddLog_P(LOG_LEVEL_INFO,PSTR("SNIFF delete device %s by age lastseen %u + maxage %u < now %u."), 
-                addr, lastseenS, ageS, nowS);
+              AddLog_P(LOG_LEVEL_INFO,PSTR("SNIFF delete device %s by age lastseen %u + maxage %u < now %u. (del_at:%u"), 
+                addr, lastseenS, ageS, nowS, del_at);
             }
             seenDevices.erase(seenDevices.begin()+i);
             freeDevices.push_back(dev);
@@ -251,6 +251,7 @@ namespace WIFI_SNIFF {
   void
   wifi_sniffer_packet_handler(void* buff, wifi_promiscuous_pkt_type_t type)
   {
+    pktCount++;
     if (type != WIFI_PKT_DATA)
       return;
     //if (type != WIFI_PKT_MGMT)
@@ -326,7 +327,6 @@ namespace WIFI_SNIFF {
   //https://github.com/kalanda/esp8266-sniffer/blob/master/src/main.cpp
   void ICACHE_FLASH_ATTR sniffer_callback(uint8_t *buffer, uint16_t length) {
     pktCount++;
-    return;
     struct SnifferPacket *snifferPacket = (struct SnifferPacket*) buffer;
     unsigned int frameControl = ((unsigned int)snifferPacket->data[1] << 8) + snifferPacket->data[0];
 
@@ -399,7 +399,7 @@ namespace WIFI_SNIFF {
 
     ResponseTime_P(PSTR(",\"WIFISNIF\":{\"MAC\":\"%s\",\"RSSI\":%d,\"STATE\":\"%s\",\"AGE\":\"%d\"}}"),
       addr,dev->RSSI, lost? "OFF":"ON", devAge);
-    MqttPublishTeleSensor();
+    MqttPublishPrefixTopicRulesProcess_P(STAT, PSTR(D_RSLT_SENSOR), Settings.flag.mqtt_sensor_retain);  // CMND_SENSORRETAIN
   }
 
   void everySecond(){
@@ -416,7 +416,7 @@ namespace WIFI_SNIFF {
       }
     }
     if (SnifEnable){
-      AddLog_P(LOG_LEVEL_INFO,PSTR("SNIFF %d"), 
+      AddLog_P(LOG_LEVEL_DEBUG,PSTR("SNIFF %d"), 
                 pktCount);
     }
   }
