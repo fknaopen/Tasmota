@@ -1017,10 +1017,12 @@ int fromHex(uint8_t *dest, const char *src, int maxlen){
     t[2] = 0;
     t[0] |= 0x20;
     t[1] |= 0x20;
-    if (!isalpha(t[0])){
+    if (isalpha(t[0])){
       if (t[0] < 'a' || t[0] > 'f'){
         return 0;
       }
+    }
+    if (isalpha(t[1])){
       if (t[1] < 'a' || t[1] > 'f'){
         return 0;
       }
