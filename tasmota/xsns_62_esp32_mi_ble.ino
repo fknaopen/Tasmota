@@ -2171,22 +2171,22 @@ void CmndMi32Option(void){
   switch(XdrvMailbox.index) {
     case 0:
       MI32.option.allwaysAggregate = onOff;  
-      ResponseCmndNumber(onOff);
+      ResponseCmndIdxNumber(onOff);
       return;
       break;
     case 1:
       MI32.option.noSummary = onOff;
-      ResponseCmndNumber(onOff);
+      ResponseCmndIdxNumber(onOff);
       return;
       break;
     case 2:
       MI32.option.directBridgeMode = onOff;
-      ResponseCmndNumber(onOff);
+      ResponseCmndIdxNumber(onOff);
       return;
       break;
     case 4:{
       MI32.option.ignoreBogusBattery = onOff;
-      ResponseCmndNumber(onOff);
+      ResponseCmndIdxNumber(onOff);
       return;
     } break;
     case 5:{
@@ -2195,17 +2195,17 @@ void CmndMi32Option(void){
         // discard all sensors for a restart
         MIBLEsensors.clear();
       }
-      ResponseCmndNumber(onOff);
+      ResponseCmndIdxNumber(onOff);
       return;
     } break;
     case 6:{
       MI32.option.MQTTType = onOff;
-      ResponseCmndNumber(onOff);
+      ResponseCmndIdxNumber(onOff);
       return;
     } break;
     
   }
-  ResponseCmndDone();
+  ResponseCmndIdxError();
 }
 
 void MI32KeyListResp(){
@@ -2303,7 +2303,7 @@ void CmndMi32Keys(void){
  * Presentation
 \*********************************************************************************************/
 
-const char HTTP_MI32[] PROGMEM = "{s}MI ESP32 v0920{m}%u%s / %u{e}";
+const char HTTP_MI32[] PROGMEM = "{s}MI ESP32 v0921{m}%u%s / %u{e}";
 const char HTTP_MI32_ALIAS[] PROGMEM = "{s}%s Alias {m}%s{e}";
 const char HTTP_MI32_MAC[] PROGMEM = "{s}%s %s{m}%s{e}";
 const char HTTP_RSSI[] PROGMEM = "{s}%s " D_RSSI "{m}%d dBm{e}";
@@ -2835,7 +2835,8 @@ void MI32ShowTriggeredSensors(){
 
       cnt++;
       ResponseAppend_P(PSTR(","));
-      MI32GetOneSensorJson(sensor, 0);
+      // hide sensor name if HASS or option6
+      MI32GetOneSensorJson(sensor, (maxcnt == 1));
       int mlen = strlen(TasmotaGlobal.mqtt_data);
 
       // if we ran out of room, leave here.
