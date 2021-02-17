@@ -280,6 +280,8 @@ struct mi_sensor_t{
       uint32_t NMT:1;
       uint32_t PIR:1;
       uint32_t Btn:1;
+      uint32_t events:1;
+      uint32_t pairing:1;
     };
     uint32_t raw;
   } feature;
@@ -1410,6 +1412,7 @@ uint32_t MIBLEgetSensorSlot(const uint8_t *mac, uint16_t _type, uint8_t counter)
       _newSensor.events=0x00;
       _newSensor.feature.PIR=1;
       _newSensor.feature.NMT=1;
+      _newSensor.feature.events=1;
       break;
     case MI_MJYD2S:
       _newSensor.NMT=0;
@@ -1418,6 +1421,7 @@ uint32_t MIBLEgetSensorSlot(const uint8_t *mac, uint16_t _type, uint8_t counter)
       _newSensor.feature.NMT=1;
       _newSensor.feature.lux=1;
       _newSensor.feature.bat=1;
+      _newSensor.feature.events=1;
       break;
     case MI_YEERC:
     case MI_DOOR:
@@ -1638,6 +1642,10 @@ int MI32parseMiPayload(int _slot, struct mi_beacon_data_t *parsed){
   char tmp[20];
   BLE_ESP32::dump(tmp, 20, (uint8_t*)&(parsed->payload), parsed->payload.size+3);
   if (BLE_ESP32::BLEDebugMode > 0) AddLog(LOG_LEVEL_DEBUG_MORE,PSTR("M32: MI%d payload %s"), _slot, tmp);
+  
+  // clear this for every payload
+  MIBLEsensors[_slot].pairing = 0;
+  MIBLEsensors[_slot].eventType.PairBtn = 0;
 
   switch(parsed->payload.type){
     case 0x01: // button press
@@ -1648,9 +1656,9 @@ int MI32parseMiPayload(int _slot, struct mi_beacon_data_t *parsed){
       MIBLEsensors[_slot].shallSendMQTT = 1;
       break;
     case 0x02: // related to pair button?
-      MIBLEsensors[_slot].Btn = 1;
-      MIBLEsensors[_slot].feature.Btn = 1;
-      MIBLEsensors[_slot].eventType.Btn = 1;
+      MIBLEsensors[_slot].pairing = 1;
+      MIBLEsensors[_slot].eventType.PairBtn = 1;
+      MIBLEsensors[_slot].feature.pairing = 1;
       MI32.mode.shallTriggerTele = 1;
       MIBLEsensors[_slot].shallSendMQTT = 1;
       break;
@@ -1755,6 +1763,7 @@ int MI32parseMiPayload(int _slot, struct mi_beacon_data_t *parsed){
       MIBLEsensors[_slot].shallSendMQTT = 1;
       MIBLEsensors[_slot].feature.lux = 1;
       MIBLEsensors[_slot].feature.NMT = 1;
+      MIBLEsensors[_slot].feature.events=1;
 
       // AddLog(LOG_LEVEL_DEBUG,PSTR("M32: PIR: primary"),MIBLEsensors[_slot].lux );
     break;
@@ -2972,21 +2981,25 @@ void MI32Show(bool json)
         WSContentSend_PD(HTTP_NEEDKEY, typeName, _MAC, Webserver->client().localIP().toString().c_str(), tmp );
       }
 
-      if (p->type==MI_NLIGHT || p->type==MI_MJYD2S) {
-#else
-      if (p->type==MI_NLIGHT) {
 #endif //USE_MI_DECRYPTION
+
+      if (p->feature.events){
         WSContentSend_PD(HTTP_EVENTS, typeName, p->events);
+      }
+      if (p->feature.NMT){
+        // no motion time
         if(p->NMT>0) WSContentSend_PD(HTTP_NMT, typeName, p->NMT);
       }
 
-      if (p->lux!=0x00ffffff) { // this is the error code -> no valid value
-        WSContentSend_PD(HTTP_SNS_ILLUMINANCE, typeName, p->lux);
+      if (p->feature.lux){
+        if (p->lux!=0x00ffffff) { // this is the error code -> no valid value
+          WSContentSend_PD(HTTP_SNS_ILLUMINANCE, typeName, p->lux);
+        }
       }
       if(p->bat!=0x00){
           WSContentSend_PD(HTTP_BATTERY, typeName, p->bat);
       }
-      if (p->type==MI_YEERC || p->type==MI_DOOR){
+      if (p->feature.Btn){
         WSContentSend_PD(HTTP_LASTBUTTON, typeName, p->Btn);
       }
       if (p->pairing){
