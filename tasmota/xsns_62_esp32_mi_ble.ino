@@ -5,6 +5,7 @@
 
 
   Copyright (C) 2020  Christian Baars and Theo Arends
+  Also Simon Hailes and Robert Klauco 
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -23,6 +24,9 @@
   --------------------------------------------------------------------------------------------
   Version yyyymmdd  Action    Description
   --------------------------------------------------------------------------------------------
+  0.9.2.1 20210217  changed - make features alos depend on received data - i.e. 'unknown' devices will show what they send.
+                              Add MI32Option6 1 to switch to tele/tasmota_ble/<somename> style MQTT independent of HASS discovery.
+  -------
   0.9.2.0 20210127  changed - Officially includes as the mi driver when using USE_BLE_ESP32.
   -------
   0.9.1.9 20201226  changed - All change now.
