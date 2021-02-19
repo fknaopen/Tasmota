@@ -221,6 +221,7 @@ uint8_t opInProgress = 0;
 int seconds = 20;
 int EQ3CurrentSingleSlot = 0;
 
+uint8_t EQ3TopicStyle = 1;
 
 // control of timing of sending polling.
 // we leave an interval between polls to allow scans to take place
@@ -244,11 +245,36 @@ std::deque<EQ3_ESP32::op_t*> opQueue;
  * Functions
 \*********************************************************************************************/
 
-char *addrStr(const uint8_t *addr){
-  static char str[14];
-  BLE_ESP32::dump(str, 14, addr, 6);
-  return str;
+const char *addrStr(const uint8_t *addr, int useAlias = 0){
+  static char addrstr[32];
+
+  const char *id = nullptr;
+  if (useAlias){
+    id = BLE_ESP32::getAlias(addr);
+  }
+  if (!id || !(*id)){
+    id = addrstr;
+    BLE_ESP32::dump(addrstr, 13, addr, 6);
+  } else {
+  }
+
+  return id;
 }
+
+char *topicPrefix(int prefix, const uint8_t *addr, int useAlias){
+  static char stopic[TOPSZ];
+  const char *id = addrStr(addr, useAlias);
+  if (!EQ3TopicStyle){
+    GetTopic_P(stopic, prefix, TasmotaGlobal.mqtt_topic, PSTR(""));
+    strcat(stopic, PSTR("EQ3/"));
+    strcat(stopic, id);
+  } else {
+    char p[] = "EQ3";
+    GetTopic_P(stopic, prefix, p, id);
+  }
+  return stopic;
+}
+
 
 
 // return 0+ if we find the addr has one of our listed prefixes
@@ -331,12 +357,12 @@ int EQ3DoOp(){
   return 0;
 }
 
-int EQ3QueueOp(const uint8_t *MAC, const uint8_t *data, int datalen, int cmdtype) {
+int EQ3QueueOp(const uint8_t *MAC, const uint8_t *data, int datalen, int cmdtype, int useAlias) {
   op_t* newop = new op_t;
   memcpy(newop->addr, MAC, 6);
   memcpy(newop->towrite, data, datalen);
   newop->writelen = datalen;
-  newop->cmdtype = cmdtype;
+  newop->cmdtype = cmdtype | (useAlias?0x80:0);
   opQueue.push_back(newop);
   int qlen = opQueue.size();
   AddLog(LOG_LEVEL_DEBUG, PSTR("EQ3 %s: Op queued len now %d"), addrStr(newop->addr), qlen);
@@ -367,6 +393,8 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
 
   int cmdtype = (((uint32_t)op->context) & 0xff);
   const char *cmdType = PSTR("invalid");
+  int useAlias = cmdtype & 0x80;
+  cmdtype &= 0x7f;
   if ((cmdtype >= 0) && (cmdtype < sizeof(cmdnames)/sizeof(*cmdnames))){
     cmdType = cmdnames[cmdtype];
   }
@@ -522,22 +550,13 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
   *(p++) = '}';
   *(p++) = 0;
 
-  char addrstr[30];
-  const char *id = nullptr;
-  id = BLE_ESP32::getAlias(addrev);
-  if (!id || !(*id)){
-    id = addrstr;
-    strcpy(addrstr, "EQ3/");
-    BLE_ESP32::dump(&addrstr[4], 13, addrev, 6);
-  } else {
-    sprintf(addrstr, "EQ3/%s", id);
-  }
-
   int type = STAT;
   if (cmdtype){
     type = STAT;
   }
-  MqttPublishPrefixTopic_P(type, addrstr, false);
+
+  char *topic = topicPrefix(type, addrev, useAlias);
+  MqttPublish(topic, false);
   return res;
 }
 
@@ -841,7 +860,7 @@ void EQ3Every50mSecond(){
  * @brief Main loop of the driver, "high level"-loop
  *
  */
-int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2);
+int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int useAlias);
 
 void EQ3EverySecond(bool restart){
   if (pairing){
@@ -864,7 +883,9 @@ void EQ3EverySecond(bool restart){
 
     char addrstr[4+8*2+2] = "EQ3/";
     BLE_ESP32::dump(&addrstr[4], 8*2+2, pairingaddr, 6);
-    MqttPublishPrefixTopic_P(STAT, addrstr, false);
+
+    char *topic = topicPrefix(STAT, pairingaddr, 1);
+    MqttPublish(topic, false);
     pairing = 0;
   }
 
@@ -894,7 +915,7 @@ void EQ3EverySecond(bool restart){
             nextEQ3Poll = i+1;
             continue;
           }
-          EQ3Send(EQ3Devices[i].addr, PSTR("poll"), nullptr, nullptr);
+          EQ3Send(EQ3Devices[i].addr, PSTR("poll"), nullptr, nullptr, 1);
           nextEQ3Poll = i+1;
           intervalSecondsCounter = intervalSeconds;
           break;
@@ -941,12 +962,16 @@ int EQ3SendCurrentDevices(){
   *(p++) = '}';
   *(p++) = 0;
 
+
+//    char *topic = topicPrefix(STAT, pairingaddr, 1);
+//    MqttPublish(topic, false);
+
   MqttPublishPrefixTopic_P(STAT, PSTR("EQ3"), false);
 
   return 0;
 }
 
-int EQ3SendResult(uint8_t *addr, const char *result){
+int EQ3SendResult(uint8_t *addr, const char *result, int useAlias = 1){
   // send the active devices
   char *p = TasmotaGlobal.mqtt_data;
   int maxlen = sizeof(TasmotaGlobal.mqtt_data);
@@ -960,8 +985,9 @@ int EQ3SendResult(uint8_t *addr, const char *result){
   *(p++) = '}';
   *(p++) = 0;
 
-  char addrstr[4+8*2+2] = "EQ3/";
-  BLE_ESP32::dump(&addrstr[4], 8*2+2, addr, 6);
+  char addrstr[40] = "EQ3/";
+  const char *id = addrStr(addr, useAlias);
+  strcat(addrstr, id);
   MqttPublishPrefixTopic_P(STAT, addrstr, false);
 
   return 0;
@@ -985,7 +1011,7 @@ void simpletolower(char *p){
 // https://reverse-engineering-ble-devices.readthedocs.io/en/latest/protocol_description/00_protocol_description.html
 // not all implemented yet.
 //
-int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2){
+int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int useAlias){
 
   char p[] = "";
   if (!param) param = p;
@@ -1300,7 +1326,7 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2){
 
   if (dlen){
     //dlen = 16;
-    return EQ3QueueOp(addr, d, dlen, cmdtype);
+    return EQ3QueueOp(addr, d, dlen, cmdtype, useAlias);
 
     //return EQ3Operation(addr, d, dlen, 4);
   }
@@ -1315,7 +1341,8 @@ const char *responses[] = {
   PSTR("ignoredbusy"),
   PSTR("invcmd"),
   PSTR("cmdfail"),
-  PSTR("invidx")
+  PSTR("invidx"),
+  PSTR("invaddr")
 };
 
 
@@ -1358,11 +1385,13 @@ int CmndTrvNext(int index, char *data){
       }
 
 
+      int useAlias = 0;
       uint8_t addrbin[6];
       int addrres = BLE_ESP32::getAddr(addrbin, p);
       if (addrres){
         if (addrres == 2){
           AddLog(LOG_LEVEL_DEBUG,PSTR("EQ3 addr used alias: %s"), p);
+          useAlias = 1;
         }
         NimBLEAddress addr(addrbin);
 
@@ -1385,7 +1414,7 @@ int CmndTrvNext(int index, char *data){
       if (param){
         param2 = strtok(nullptr, " ");
       }
-      int res = EQ3Send(addrbin, cmd, param, param2);
+      int res = EQ3Send(addrbin, cmd, param, param2, useAlias);
       if (res > 0) {
         // succeeded to queue
         AddLog(LOG_LEVEL_ERROR,PSTR("EQ3 queued"));
@@ -1496,33 +1525,36 @@ bool mqtt_direct(){
   int remains = 120;
   memset(tmp, 0, sizeof(tmp));
   p = tmp;
-  strncpy(p, items[MACindex], remains-6);
-  p += strlen(p);
-  *(p++) = 0x20;
-  remains = 120 - (p-tmp);
+  uint8_t addr[6];
+  int useAlias = BLE_ESP32::getAddr(addr, items[MACindex]);
+  int res = 6; // invalid address/alias
 
-  if (CMDindex){
-    strncpy(p, items[CMDindex], remains-6);
+  // if address or alias valid
+  if (useAlias){
+    strncpy(p, items[MACindex], remains-6);
     p += strlen(p);
     *(p++) = 0x20;
     remains = 120 - (p-tmp);
+
+    if (CMDindex){
+      strncpy(p, items[CMDindex], remains-6);
+      p += strlen(p);
+      *(p++) = 0x20;
+      remains = 120 - (p-tmp);
+    }
+
+    strncpy(p, XdrvMailbox.data, remains-6);
+    p += strlen(p);
+    *(p++) = 0x20;
+    remains = 120 - (p-tmp);
+    *(p++) = 0;
+
+    AddLog(LOG_LEVEL_DEBUG,PSTR("EQ3:mqtt->cmdstr %s"), tmp);
+    res = CmndTrvNext(1, tmp);
   }
 
-  strncpy(p, XdrvMailbox.data, remains-6);
-  p += strlen(p);
-  *(p++) = 0x20;
-  remains = 120 - (p-tmp);
-  *(p++) = 0;
-
-  AddLog(LOG_LEVEL_DEBUG,PSTR("EQ3:mqtt->cmdstr %s"), tmp);
-
-
-  int res = CmndTrvNext(1, tmp);
-  uint8_t addrbin[6];
-  BLE_ESP32::fromHex(addrbin, items[MACindex], sizeof(addrbin));
-
   // post result to stat/tas/EQ3/<MAC> {"result":"<string>"}
-  EQ3SendResult(addrbin, responses[res]);
+  EQ3SendResult(addr, responses[res], (useAlias == 2)? 1:0);
 
   return true;
 }
