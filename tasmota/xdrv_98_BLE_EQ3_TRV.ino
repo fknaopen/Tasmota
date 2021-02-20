@@ -1185,7 +1185,7 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
       int dd = 0;
       int hour = 0;
       int min = 0;
-      char *p = param2;
+      char *p = param;
       p = strtok(p, "-");
       if (!p || p[0] == 0) return -1;
       sscanf(p, "%d", &yy);
@@ -1242,7 +1242,8 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
     if (!strcmp(cmd, "unlock"))   { cmdtype = 11; d[0] = 0x80; d[1] = 0x00; dlen = 2; break; }
     if (!strcmp(cmd, "auto"))     { cmdtype = 12; d[0] = 0x40; d[1] = 0x00; dlen = 2; break; }
     if (!strcmp(cmd, "manual"))   { cmdtype = 13; d[0] = 0x40; d[1] = 0x40; dlen = 2; break; }
-    if (!strcmp(cmd, "eco"))      { cmdtype = 14; d[0] = 0x40; d[1] = 0x80; dlen = 2; break; }
+    // this is basically 'cancel holiday' - mode auto does that.
+    //if (!strcmp(cmd, "eco"))      { cmdtype = 14; d[0] = 0x40; d[1] = 0x80; dlen = 2; break; }
     if (!strcmp(cmd, "on"))       { cmdtype = 15; d[0] = 0x41; d[1] = 0x3c; dlen = 2; break; }
     if (!strcmp(cmd, "off"))      { cmdtype = 16; d[0] = 0x41; d[1] = 0x09; dlen = 2; break; }
     if (!strcmp(cmd, "valve"))     { cmdtype = 17; d[0] = 0x41; d[1] = 0x3c; 
@@ -1264,9 +1265,10 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
       if (!strcmp(param, "manual")){
         d[1] = 0x40;
       }
-      if (!strcmp(param, "eco")){
-        d[1] = 0x80;
-      }
+      // this is basically 'cancel holiday' - mode auto does that.
+      //if (!strcmp(param, "eco")){
+      //  d[1] = 0x80;
+      //}
       dlen = 2; break; 
     }
     if (!strcmp(cmd, "day"))      { cmdtype = 19; d[0] = 0x43; dlen = 1; break; }
