@@ -1255,7 +1255,8 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
       }
       dlen = 2; break; 
     }
-    if (!strcmp(cmd, "mode"))     { cmdtype = 18; d[0] = 0x40; d[1] = 0x00; 
+    if (!strcmp(cmd, "mode"))     { cmdtype = 18; d[0] = 0x40; d[1] = 0xff;// invlaid 
+
       if (!param || param[0] == 0){
         return -1;
       }
@@ -1264,6 +1265,10 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
       }
       if (!strcmp(param, "manual")){
         d[1] = 0x40;
+      }
+
+      if (d[1] == 0xff){ // no valid mode selection found
+        return -1;
       }
       // this is basically 'cancel holiday' - mode auto does that.
       //if (!strcmp(param, "eco")){
