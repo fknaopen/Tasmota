@@ -1145,7 +1145,7 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
       ftemp *= 2;
       uint8_t ntemp = (uint8_t) ftemp;
 
-      d[0] = 0x11; d[1] = dtemp; d[1] = ntemp; dlen = 3;
+      d[0] = 0x11; d[1] = dtemp; d[2] = ntemp; dlen = 3;
       break; 
     }
 
