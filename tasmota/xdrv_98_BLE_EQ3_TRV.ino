@@ -1204,7 +1204,7 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
       if (!p || p[0] == 0) return -1;
       sscanf(p, "%d", &min);
 
-      min += hour*24;
+      min += hour*60;
       int tt = min / 30;
 
       float ftemp = 15;
