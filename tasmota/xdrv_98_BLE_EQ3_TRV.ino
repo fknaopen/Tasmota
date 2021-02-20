@@ -29,9 +29,14 @@ Commands:
 e.g.
 trv 001A22092EE0 settemp 22.5
 
+trvperiod n - set polling period in seconds (default teleperiod at boot)
+trvonlyaliased 0/1 - only hear devices with BLEAlias set
+trvMatchPrefix 0/1 - if set, then it will add trvs to the seen list which have mac starting with :
+  macs in macprefixes, currently only 001a22
+Note: anything with BLEAlias starting "EQ3" will be added to the seen list.
 
-trv reset
-trv devlist - reprot seen devices.  Active scanning required, not passive, as it looks for names
+trv reset - clear device list
+trv devlist - report seen devices.  Active scanning required, not passive, as it looks for names
 trv scan - same as devlist
 trv <mac> state - report general state (see below for MQTT)
 trv <mac> raw <hex to send> - send a raw command
@@ -43,7 +48,7 @@ trv <mac> lock - manual lock of physical buttons
 trv <mac> unlock - manual unlock of physical buttons
 trv <mac> auto - set EQ3 to auto mode
 trv <mac> manual - set EQ3 to manual mode
-trv <mac> eco - set EQ3 to eco mode?
+trv <mac> mode auto|manual - set EQ3 to mode auto|manual?
 trv <mac> day - set EQ3 to day temp
 trv <mac> night - set EQ3 to night temp
 trv <mac> settemp 20.5 - set EQ3 to temp
@@ -58,15 +63,16 @@ trv <mac> setprofile <0-6> 20.5-07:30,17-17:00,22.5-22:00,17-24:00 (up to 7 temp
 
 Responses:
 normal:
-stat/tasmota_E89E98/EQ3 = {
-  "trv":"00:1a:22:09:2e:e0",
-  "blestate":DONENOTIFIED, - state of the command - FAILxxx | DONExxxx
-  "raw":"02010900042C", - raw response in hex
-  "temp":22.0, - temp currently set (NOT measured temp)
-  "posn":0, - position of the valve (0-100);
-  "mode":"manual", 
+stat/EQ3/001A22092C9A = {
+  "cmd":"state",
+  "result":"ok",
+  "RSSI":-83,
+  "stattime":1613814193,
+  "temp":21.0,
+  "posn":0,
+  "mode":"auto",
   "boost":"inactive",
-  "dst":"set", - daylight savings time?
+  "dst":"set",
   "window":"closed",
   "state":"unlocked",
   "battery":"GOOD"
@@ -75,25 +81,21 @@ stat/tasmota_E89E98/EQ3 = {
 holiday:
 as above, but adds ,"holidayend":"YY-MM-DD HH:MM"
 
-when trv <mac> reqprofile is used:
-stat/tasmota_E89E98/EQ3 = {"trv":"00:1a:22:09:2e:e0","blestate":DONENOTIFIED,"raw":"02010900042C",
-  "profiledayN":"20.5-07:30,17.0-17:00,22.5-22:00,17.0-24:00"}
-where N is the day (0-6).
+when trv <mac> reqprofile is used, adds:
+  "profiledayN":"20.5-07:30,17.0-17:00,22.5-22:00,17.0-24:00"
+where N is the day (0-6) (0 = saturday?).
 
-when trv <mac> setprofile is used:
-stat/tasmota_E89E98/EQ3 = {"trv":"00:1a:22:09:2e:e0","blestate":DONENOTIFIED,"raw":"02010900042C","profiledayset":N}
-where N is the day (0-6).
+when trv <mac> setprofile is used, adds:
+"profiledayset":N
+where N is the day (0-6) (0 = saturday?).
 
 on error:
-stat/tasmota_E89E98/EQ3 = {"trv":"00:1a:22:09:2e:e0","blestate":"FAIL<xxxx>","retriesremain":<1-3>}
-when retries exhausted:
-stat/tasmota_E89E98/EQ3 = {"trv":"00:1a:22:09:2e:e0","blestate":"FAIL<xxxx>"}
+  "result":"fail",
 
-The driver will try a command three times.
+The driver will try a command three times before reporting
 
 
-
-4 digit pin calculation:
+4 digit pin calculation: (just for info)
 serialno = "REQ0123456"
 pin = []
 
