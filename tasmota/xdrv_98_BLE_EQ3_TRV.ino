@@ -1325,7 +1325,7 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
   } while(0);
 
   if (dlen){
-    //dlen = 16;
+    dlen = 16;
     return EQ3QueueOp(addr, d, dlen, cmdtype, useAlias);
 
     //return EQ3Operation(addr, d, dlen, 4);
