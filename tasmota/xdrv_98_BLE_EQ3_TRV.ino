@@ -1546,9 +1546,9 @@ bool mqtt_direct(){
   int EQ3index = 0;
   int MACindex = 0;
   int CMDindex = 0;
-  if (strncasecmp_P(items[cnt-3], PSTR(EQ3_TOPIC), strlen(EQ3_TOPIC)) != 0) {
+  if (strcasecmp_P(items[cnt-3], PSTR(EQ3_TOPIC)) != 0) {
     //AddLog(LOG_LEVEL_INFO,PSTR("cnt-3 not %s"), PSTR(EQ3_TOPIC));
-    if (strncasecmp_P(items[cnt-2], PSTR(EQ3_TOPIC), strlen(EQ3_TOPIC)) != 0) {
+    if (strcasecmp_P(items[cnt-2], PSTR(EQ3_TOPIC)) != 0) {
       //AddLog(LOG_LEVEL_INFO,PSTR("cnt-2 not %s"), PSTR(EQ3_TOPIC));
       return false; // not for us
     } else {
