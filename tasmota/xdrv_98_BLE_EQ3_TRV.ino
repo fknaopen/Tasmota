@@ -995,7 +995,7 @@ int EQ3SendCurrentDevices(){
   return 0;
 }
 
-int EQ3SendResult(uint8_t *addr, const char *result, int useAlias = 1){
+int EQ3SendResult(char *requested, const char *result){
   // send the active devices
   char *p = TasmotaGlobal.mqtt_data;
   int maxlen = sizeof(TasmotaGlobal.mqtt_data);
@@ -1009,11 +1009,13 @@ int EQ3SendResult(uint8_t *addr, const char *result, int useAlias = 1){
   *(p++) = '}';
   *(p++) = 0;
 
-  char addrstr[40] = "EQ3/";
-  const char *id = addrStr(addr, useAlias);
-  strcat(addrstr, id);
-  MqttPublishPrefixTopic_P(STAT, addrstr, false);
 
+  static char stopic[TOPSZ];
+  GetTopic_P(stopic, STAT, TasmotaGlobal.mqtt_topic, PSTR(""));
+  strcat(stopic, PSTR("EQ3/"));
+  strcat(stopic, requested);
+
+  MqttPublish(stopic, false);
   return 0;
 }
 
@@ -1519,7 +1521,7 @@ bool mqtt_direct(){
   strncpy(stopic, XdrvMailbox.topic, TOPSZ);
   XdrvMailbox.topic[TOPSZ-1] = 0;
 
-  //AddLog(LOG_LEVEL_DEBUG,PSTR("EQ3 mqtt: %s:%s"), stopic, XdrvMailbox.data);
+  AddLog(LOG_LEVEL_DEBUG,PSTR("EQ3 mqtt: %s:%s"), stopic, XdrvMailbox.data);
 
   char *items[10];
   char *p = stopic;
@@ -1591,7 +1593,7 @@ bool mqtt_direct(){
   }
 
   // post result to stat/tas/EQ3/<MAC> {"result":"<string>"}
-  EQ3SendResult(addr, responses[res], (useAlias == 2)? 1:0);
+  EQ3SendResult(items[MACindex], responses[res]);
 
   return true;
 }
