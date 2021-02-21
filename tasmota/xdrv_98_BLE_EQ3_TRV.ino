@@ -403,11 +403,13 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
 
   strcpy(p, "{");
   p++;
-//  if (cmdtype){
-    sprintf(p, "\"cmd\":\"%s\",", cmdType);
-    p += strlen(p);
-//  }
-  sprintf(p, "\"result\":\"%s\"", success? "ok":"fail");
+  sprintf(p, "\"cmd\":\"%s\"", cmdType);
+  p += strlen(p);
+  sprintf(p, ",\"result\":\"%s\"", success? "ok":"fail");
+  p += strlen(p);
+  
+  const char *host = NetworkHostname();
+  sprintf(p, ",\"tas\":\"%s\"", host);
   p += strlen(p);
   
   if (cmdtype == 1){
@@ -472,6 +474,26 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
         break;
     }
     p += strlen(p);
+
+    sprintf(p, ",\"hassmode\":");
+    p += strlen(p);
+
+    do {
+      // its in auto
+      if (stat & 3 == 0) { sprintf(p, "\"auto\""); break; }
+      // it's set to 'OFF'
+      if ((stat & 3 == 1) && (status[5] == 9)) { sprintf(p, "\"off\""); break; }
+      // it's actively heating (valve open)
+      if ((stat & 3 == 1) && (status[5] > 9) && (status[3] > 0)) { sprintf(p, "\"heat\""); break; }
+      // it's achieved temp (valve closed)
+      if ((stat & 3 == 1) && (status[5] > 9)) { sprintf(p, "\"idle\""); break; }
+
+      sprintf(p, "\"idle\""); 
+      
+      break;
+    } while (0);
+    p += strlen(p);
+
 
     sprintf(p, ",\"boost\":\"%s\"", (stat & 4)?"active":"inactive");
     p += strlen(p);
@@ -1267,6 +1289,12 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
       }
       if (!strcmp(param, "manual")){
         d[1] = 0x40;
+      }
+      if (!strcmp(param, "on") || !strcmp(param, "heat")) { 
+        d[0] = 0x41; d[1] = 0x3c; dlen = 2; break; 
+      }
+      if (!strcmp(param, "off") || !strcmp(param, "cool")) { 
+        d[0] = 0x41; d[1] = 0x09; dlen = 2; break; 
       }
 
       if (d[1] == 0xff){ // no valid mode selection found
