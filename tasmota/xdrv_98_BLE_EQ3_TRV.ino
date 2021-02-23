@@ -297,12 +297,12 @@ bool EQ3Operation(const uint8_t *MAC, const uint8_t *data, int datalen, int cmdt
   // ALWAYS use this function to create a new one.
   int res = BLE_ESP32::newOperation(&op);
   if (!res){
-    AddLog(LOG_LEVEL_ERROR,PSTR("EQ3 %s:Can't get a newOperation from BLE"), addrStr(MAC));
+    AddLog(LOG_LEVEL_ERROR,PSTR("EQ3 %s:Can't get a newOperation from BLE"), addrStr(MAC, cmdtype & 0x80));
     retries = 0;
     return 0;
   } else {
 #ifdef EQ3_DEBUG
-    AddLog(LOG_LEVEL_DEBUG,PSTR("EQ3 %s:got a newOperation from BLE"), addrStr(MAC));
+    AddLog(LOG_LEVEL_DEBUG,PSTR("EQ3 %s:got a newOperation from BLE"), addrStr(MAC, cmdtype & 0x80));
 #endif
   }
 
@@ -331,13 +331,12 @@ bool EQ3Operation(const uint8_t *MAC, const uint8_t *data, int datalen, int cmdt
   if (!res){
     // if it fails to add to the queue, do please delete it
     BLE_ESP32::freeOperation(&op);
-    AddLog(LOG_LEVEL_ERROR,PSTR("Failed to queue new operation - deleted"));
+    AddLog(LOG_LEVEL_ERROR,PSTR("EQ3 %s:Failed to queue new operation - deleted"), addrStr(MAC, cmdtype & 0x80));
     retries = 0;
   } else {
     if (retries_in){
       retries = retries_in;
     }
-    opInProgress = 1;
   }
 
   return res;
@@ -349,10 +348,12 @@ int EQ3DoOp(){
       op_t* op = opQueue[0];
       if (EQ3Operation(op->addr, op->towrite, op->writelen, op->cmdtype, 4)){
         opQueue.pop_front();
-
-        AddLog(LOG_LEVEL_DEBUG, PSTR("EQ3 %s:Op dequeued len now %d"), addrStr(op->addr), opQueue.size());
+        opInProgress = 1;
+        AddLog(LOG_LEVEL_DEBUG, PSTR("EQ3 %s:Op dequeued len now %d"), addrStr(op->addr, (op->cmdtype & 0x80)), opQueue.size());
         delete op;
         return 1;
+      } else {
+        AddLog(LOG_LEVEL_ERROR, PSTR("EQ3 %s:Op BLE could not start op queue len %d"), addrStr(op->addr, (op->cmdtype & 0x80)), opQueue.size());
       }
     }
   }
@@ -367,7 +368,7 @@ int EQ3QueueOp(const uint8_t *MAC, const uint8_t *data, int datalen, int cmdtype
   newop->cmdtype = cmdtype | (useAlias?0x80:0);
   opQueue.push_back(newop);
   int qlen = opQueue.size();
-  AddLog(LOG_LEVEL_DEBUG, PSTR("EQ3 %s: Op queued len now %d"), addrStr(newop->addr), qlen);
+  AddLog(LOG_LEVEL_DEBUG, PSTR("EQ3 %s: Op queued len now %d"), addrStr(newop->addr, (newop->cmdtype & 0x80)), qlen);
   EQ3DoOp();
   return qlen;
 }
@@ -405,9 +406,13 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
   p++;
   sprintf(p, "\"cmd\":\"%s\"", cmdType);
   p += strlen(p);
+
   sprintf(p, ",\"result\":\"%s\"", success? "ok":"fail");
   p += strlen(p);
   
+  sprintf(p, ",\"MAC\":\"%s\"", addrStr(addrev));
+  p += strlen(p);
+
   const char *host = NetworkHostname();
   sprintf(p, ",\"tas\":\"%s\"", host);
   p += strlen(p);
@@ -586,7 +591,8 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
 
 int EQ3GenericOpCompleteFn(BLE_ESP32::generic_sensor_t *op){
   uint32_t context = (uint32_t) op->context;
-
+  opInProgress = 0;
+  
   if (op->state <= GEN_STATE_FAILED){
     uint8_t addrev[6];
     const uint8_t *native = op->addr.getNative();
@@ -596,9 +602,15 @@ int EQ3GenericOpCompleteFn(BLE_ESP32::generic_sensor_t *op){
     if (retries > 1){
       retries--;
 
-      EQ3Operation(addrev, op->dataToWrite, op->writelen, (int)op->context);
-      //EQ3ParseOp(op, false, retries);
-      AddLog(LOG_LEVEL_ERROR,PSTR("EQ3 %s: trv operation failed - retrying %d"), addrStr(addrev), op->state);
+      if (EQ3Operation(addrev, op->dataToWrite, op->writelen, (int)op->context)){
+        //EQ3ParseOp(op, false, retries);
+        AddLog(LOG_LEVEL_ERROR,PSTR("EQ3 %s: trv operation failed - retrying %d"), addrStr(addrev), op->state);
+        opInProgress = 1;
+      } else {
+        retries = 0;
+        EQ3ParseOp(op, false, 0);
+        AddLog(LOG_LEVEL_ERROR,PSTR("EQ3 %s: trv operation failed to send op %d"), addrStr(addrev), op->state);
+      }
     } else {
       retries = 0;
       EQ3ParseOp(op, false, 0);
