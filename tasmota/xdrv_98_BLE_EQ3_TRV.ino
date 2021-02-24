@@ -1143,6 +1143,7 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
       float ftemp = 20;
       sscanf(param, "%f", &ftemp);
       if (ftemp < 4.5) ftemp = 4.5;
+      if (ftemp > 30) ftemp = 30;
       ftemp *= 2;
       uint8_t ctemp = (uint8_t) ftemp;
       d[0] = 0x41; d[1] = ctemp; dlen = 2;
