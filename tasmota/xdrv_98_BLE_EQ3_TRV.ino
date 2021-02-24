@@ -1142,7 +1142,7 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
       }
       float ftemp = 20;
       sscanf(param, "%f", &ftemp);
-      if (ftemp < 5) ftemp = 5;
+      if (ftemp < 4.5) ftemp = 4.5;
       ftemp *= 2;
       uint8_t ctemp = (uint8_t) ftemp;
       d[0] = 0x41; d[1] = ctemp; dlen = 2;
@@ -1282,8 +1282,18 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
     if (!strcmp(cmd, "manual"))   { cmdtype = 13; d[0] = 0x40; d[1] = 0x40; dlen = 2; break; }
     // this is basically 'cancel holiday' - mode auto does that.
     //if (!strcmp(cmd, "eco"))      { cmdtype = 14; d[0] = 0x40; d[1] = 0x80; dlen = 2; break; }
-    if (!strcmp(cmd, "on"))       { cmdtype = 15; d[0] = 0x41; d[1] = 0x3c; dlen = 2; break; }
-    if (!strcmp(cmd, "off"))      { cmdtype = 16; d[0] = 0x41; d[1] = 0x09; dlen = 2; break; }
+    if (!strcmp(cmd, "on"))       { 
+      int res = EQ3Send(addr, "manual", nullptr, nullptr, useAlias);
+      char tmp[] = "30";
+      int res2 = EQ3Send(addr, "settemp", tmp, nullptr, useAlias);
+      return res2;
+    }
+    if (!strcmp(cmd, "off"))      { 
+      int res = EQ3Send(addr, "manual", nullptr, nullptr, useAlias);
+      char tmp[] = "4.5";
+      int res2 = EQ3Send(addr, "settemp", tmp, nullptr, useAlias);
+      return res2;
+    }
     if (!strcmp(cmd, "valve"))     { cmdtype = 17; d[0] = 0x41; d[1] = 0x3c; 
       if (!param || param[0] == 0){
         return -1;
@@ -1305,10 +1315,16 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
         d[1] = 0x40;
       }
       if (!strcmp(param, "on") || !strcmp(param, "heat")) { 
-        d[0] = 0x41; d[1] = 0x3c; dlen = 2; break; 
+        int res = EQ3Send(addr, "manual", nullptr, nullptr, useAlias);
+        char tmp[] = "30";
+        int res2 = EQ3Send(addr, "settemp", tmp, nullptr, useAlias);
+        return res2;
       }
       if (!strcmp(param, "off") || !strcmp(param, "cool")) { 
-        d[0] = 0x41; d[1] = 0x09; dlen = 2; break; 
+        int res = EQ3Send(addr, "manual", nullptr, nullptr, useAlias);
+        char tmp[] = "4.5";
+        int res2 = EQ3Send(addr, "settemp", tmp, nullptr, useAlias);
+        return res2;
       }
 
       if (d[1] == 0xff){ // no valid mode selection found
