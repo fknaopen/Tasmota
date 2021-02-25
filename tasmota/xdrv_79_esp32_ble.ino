@@ -1412,8 +1412,12 @@ static void BLEGenNotifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, ui
 #endif
       } else {
         if (devaddr == op->addr){
-          thisop = op;
-          break;
+          if (op->notifytimer){
+            thisop = op;
+            break;
+          } else {
+            AddLog(LOG_LEVEL_ERROR,PSTR("BLE: notify: op addr match but op found which is not waiting."));
+          }
         }
       }
     }
@@ -1807,12 +1811,12 @@ static void BLETaskRunCurrentOperation(BLE_ESP32::generic_sensor_t** pCurrentOpe
 #endif
           op->notifylen = 0;
           if(pNCharacteristic->canNotify()) {
+            uint64_t now = esp_timer_get_time();
+            op->notifytimer = now;
             if(pNCharacteristic->subscribe(true, BLE_ESP32::BLEGenNotifyCB)) {
 #ifdef BLE_ESP32_DEBUG
               if (BLEDebugMode > 0) AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: subscribe for notify"));
 #endif
-              uint64_t now = esp_timer_get_time();
-              op->notifytimer = now;
               // this will get changed to read or write,
               // but here in case it's notify only (can that happen?)
               notifystate = GEN_STATE_WAITNOTIFY;
@@ -1822,22 +1826,24 @@ static void BLETaskRunCurrentOperation(BLE_ESP32::generic_sensor_t** pCurrentOpe
               AddLog(LOG_LEVEL_ERROR,PSTR("BLE: failed subscribe for notify"));
 #endif
               newstate = GEN_STATE_FAILED_NOTIFY;
+              op->notifytimer = 0L;
             }
           } else {
             if(pNCharacteristic->canIndicate()) {
+              uint64_t now = esp_timer_get_time();
+              op->notifytimer = now;
               if(pNCharacteristic->subscribe(false, BLE_ESP32::BLEGenNotifyCB)) {
 #ifdef BLE_ESP32_DEBUG
                 AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: subscribe for indicate"));
 #endif
                 notifystate = GEN_STATE_WAITINDICATE;
-                uint64_t now = esp_timer_get_time();
-                op->notifytimer = now;
                 waitNotify = true;
               } else {
 #ifdef BLE_ESP32_DEBUG
                 AddLog(LOG_LEVEL_ERROR,PSTR("BLE: failed subscribe for indicate"));
 #endif
                 newstate = GEN_STATE_FAILED_INDICATE;
+                op->notifytimer = 0L;
               }
             } else {
               newstate = GEN_STATE_FAILED_CANTNOTIFYORINDICATE;
