@@ -484,14 +484,15 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
     p += strlen(p);
 
     do {
+      //0201283B042A
       // its in auto
-      if (stat & 3 == 0) { sprintf(p, "\"auto\""); break; }
+      if ((stat & 3) == 0) { sprintf(p, "\"auto\""); break; }
       // it's set to 'OFF'
-      if ((stat & 3 == 1) && (status[5] == 9)) { sprintf(p, "\"off\""); break; }
+      if (((stat & 3) == 1) && (status[5] == 9)) { sprintf(p, "\"off\""); break; }
       // it's actively heating (valve open)
-      if ((stat & 3 == 1) && (status[5] > 9) && (status[3] > 0)) { sprintf(p, "\"heat\""); break; }
+      if (((stat & 3) == 1) && (status[5] > 9) && (status[3] > 0)) { sprintf(p, "\"heat\""); break; }
       // it's achieved temp (valve closed)
-      if ((stat & 3 == 1) && (status[5] > 9)) { sprintf(p, "\"idle\""); break; }
+      if (((stat & 3) == 1) && (status[5] > 9)) { sprintf(p, "\"idle\""); break; }
 
       sprintf(p, "\"idle\""); 
       
