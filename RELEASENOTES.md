@@ -78,20 +78,20 @@ The attached binaries can also be downloaded from http://ota.tasmota.com/tasmota
 
 [Complete list](BUILDS.md) of available feature and sensors.
 
-## Changelog v9.3.0.1
+## Changelog v9.3.1.1
 ### Added
-- Animate PWM dimmer brightness LEDs during transitions and with variable brightness [#11076](https://github.com/arendst/Tasmota/issues/11076)
-- Commands ``StateRetain`` and ``InfoRetain`` [#11084](https://github.com/arendst/Tasmota/issues/11084)
+- Command ``Sensor80 1 <0..7>`` to control MFRC522 RFID antenna gain from 18dB (0) to 48dB (7) [#11073](https://github.com/arendst/Tasmota/issues/11073)
+- Support for SML VBUS [#11125](https://github.com/arendst/Tasmota/issues/11125)
+- Support for NEC and OPTOMA LCD/DLP Projector serial power control by Jan Bubík [#11145](https://github.com/arendst/Tasmota/issues/11145)
+- Allow MCP230xx pinmode from output to input [#11104](https://github.com/arendst/Tasmota/issues/11104)
 
 ### Changed
-- Remove the need to start filenames with a slash (/) in Ufs commands
-- Removed command ``VirtualCT`` as synonym for ``SetOption106`` [#11049](https://github.com/arendst/Tasmota/issues/11049)
+- TuyaMcu dimmer timeout [#11121](https://github.com/arendst/Tasmota/issues/11121)
 
 ### Fixed
-- Web request accepts wrong password [#11039](https://github.com/arendst/Tasmota/issues/11039)
-- Ili1942 driver [#11046](https://github.com/arendst/Tasmota/issues/11046)
-- ESP32 Mi32 driver [#11048](https://github.com/arendst/Tasmota/issues/11048)
-- Shutter driver [#11055](https://github.com/arendst/Tasmota/issues/11055)
-- TM1637 driver now needs ``TM1637 CLK`` and ``TM1637 DIO`` to enable [#11057](https://github.com/arendst/Tasmota/issues/11057)
-- Sml driver [#11082](https://github.com/arendst/Tasmota/issues/11082)
-- Ezo drivers [#11083](https://github.com/arendst/Tasmota/issues/11083)
+- Refactor acceleration function for shutter stepper and servo [#11088](https://github.com/arendst/Tasmota/issues/11088)
+- LM75AD detection on different addresses [#11096](https://github.com/arendst/Tasmota/issues/11096)
+- Timer loop when console is scrolled up regression from v9.3.0 [#11108](https://github.com/arendst/Tasmota/issues/11108)
+- Display exception when no file system is present [#11125](https://github.com/arendst/Tasmota/issues/11125)
+- PN532 on ESP32 Serial flush both Tx and Rx buffers [#10910](https://github.com/arendst/Tasmota/issues/10910)
+- Light scheme related color changes [#11041](https://github.com/arendst/Tasmota/issues/11041)
