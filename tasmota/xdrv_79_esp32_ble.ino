@@ -86,7 +86,7 @@ i.e. the Bluetooth of the ESP can be shared without conflict.
 #define BLE_ESP32_ALIASES
 
 // uncomment for more diagnostic/information messages - + more flash use.
-//#define BLE_ESP32_DEBUG
+#define BLE_ESP32_DEBUG
 
 #define XDRV_79                    79
 #define USE_MI_DECRYPTION
@@ -3182,6 +3182,7 @@ static void mainThreadOpCallbacks() {
 
       bool callbackres = false;
 
+      if (BLEDebugMode > 0) AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: op->completecallback is %u"), op->completecallback);
       if (op->completecallback){
         try {
           OPCOMPLETE_CALLBACK *pFn = (OPCOMPLETE_CALLBACK *)(op->completecallback);
@@ -3199,6 +3200,7 @@ static void mainThreadOpCallbacks() {
       if (!callbackres){
         for (int i = 0; i < operationsCallbacks.size(); i++){
           try {
+            if (BLEDebugMode > 0) AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: operationsCallbacks %d is %u"), i, operationsCallbacks[i]);
             OPCOMPLETE_CALLBACK *pFn = operationsCallbacks[i];
             callbackres = pFn(op);
 #ifdef BLE_ESP32_DEBUG
