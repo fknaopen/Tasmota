@@ -391,8 +391,10 @@ BLE_ESP32::generic_sensor_t* prepOperation = nullptr;
 std::deque<BLE_ESP32::generic_sensor_t*> queuedOperations;
 // operations in progress (at the moment, only one)
 std::deque<BLE_ESP32::generic_sensor_t*> currentOperations;
-// operations which have completed or failed, ready to send to MQTT
+// operations which have completed or failed
 std::deque<BLE_ESP32::generic_sensor_t*> completedOperations;
+// operations which are ready to send to MQTT
+std::deque<BLE_ESP32::generic_sensor_t*> mqttOperations;
 
 // seen devices
 #define MAX_BLE_DEVICES_LOGGED 80
@@ -2185,7 +2187,7 @@ static void BLEEverySecond(bool restart){
   BLE_ESP32::mainThreadOpCallbacks();
 
   // post any MQTT data if we completed anything in the last second
-  if (completedOperations.size()){
+  if (mqttOperations.size()){
     BLE_ESP32::BLEPostMQTT(true); // send only completed
   }
 
@@ -3042,7 +3044,7 @@ static void BLEPostMQTT(bool onlycompleted) {
 //  if (TasmotaGlobal.ota_state_flag) return;
 
 
-  if (prepOperation || completedOperations.size() || queuedOperations.size() || currentOperations.size()){
+  if (prepOperation || mqttOperations.size() || queuedOperations.size() || currentOperations.size()){
 #ifdef BLE_ESP32_DEBUG
     if (BLEDebugMode > 0) AddLog(LOG_LEVEL_INFO,PSTR("BLE: some to show"));
 #endif
@@ -3100,17 +3102,17 @@ static void BLEPostMQTT(bool onlycompleted) {
       }
     }
 
-    if (completedOperations.size()){
+    if (mqttOperations.size()){
 #ifdef BLE_ESP32_DEBUG
-      if (BLEDebugMode > 0) AddLog(LOG_LEVEL_INFO,PSTR("BLE: completed %d"), completedOperations.size());
+      if (BLEDebugMode > 0) AddLog(LOG_LEVEL_INFO,PSTR("BLE: completed %d"), mqttOperations.size());
 #endif
       do {
-        generic_sensor_t *toSend = nextOperation(&completedOperations);
+        generic_sensor_t *toSend = nextOperation(&mqttOperations);
         if (!toSend) {
           break; // break from while loop
         } else {
 #ifdef BLE_ESP32_DEBUG
-          if (BLEDebugMode > 0) AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: completedOperation removed"));
+          if (BLEDebugMode > 0) AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: mqttOperation removed opid %d"), toSend->opid);
 #endif
           std::string out = BLETriggerResponse(toSend);
           snprintf_P(TasmotaGlobal.mqtt_data, sizeof(TasmotaGlobal.mqtt_data), PSTR("%s"), out.c_str());
@@ -3182,13 +3184,13 @@ static void mainThreadOpCallbacks() {
 
       bool callbackres = false;
 
-      if (BLEDebugMode > 0) AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: op->completecallback is %u"), op->completecallback);
+      if (BLEDebugMode > 0) AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: op->completecallback is %u opid %d"), op->completecallback, op->opid);
       if (op->completecallback){
         try {
           OPCOMPLETE_CALLBACK *pFn = (OPCOMPLETE_CALLBACK *)(op->completecallback);
           callbackres = pFn(op);
 #ifdef BLE_ESP32_DEBUG
-          if (BLEDebugMode > 0) AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: op->completecallback %d"), callbackres);
+          if (BLEDebugMode > 0) AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: op->completecallback %d opid %d"), callbackres, op->opid);
 #endif
         } catch(const std::exception& e){
 #ifdef BLE_ESP32_DEBUG
@@ -3217,12 +3219,16 @@ static void mainThreadOpCallbacks() {
         }
       }
 
-      // if some callback told us not to send on MQTT, then remove from completed and delete the data
-      if (callbackres){
+      // always remove from here
+      completedOperations.erase(completedOperations.begin() + i);
+      // unless some callback told us not to send on MQTT, then remove from completed and 
+      // add to mqtt list
+      if (!callbackres){
+        addOperation(&mqttOperations, &op);
+      } else {
 #ifdef BLE_ESP32_DEBUG
-        if (BLEDebugMode > 0) AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: callbackres true -> delete op"));
+        if (BLEDebugMode > 0) AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: callbackres true -> delete op opid %d"), op->opid);
 #endif
-        completedOperations.erase(completedOperations.begin() + i);
         delete op;
       }
     }
