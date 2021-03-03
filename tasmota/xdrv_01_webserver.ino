@@ -2344,6 +2344,7 @@ void HandleUploadDone(void) {
 #ifdef USE_BLE_ESP32
   // declare the fn
   int ExtStopBLE();
+  int ExtRestartBLEIfEnabled();
 #endif
 
 void UploadServices(uint32_t start_service) {
@@ -2365,6 +2366,9 @@ void UploadServices(uint32_t start_service) {
 #ifdef USE_EMULATION
     UdpConnect();
 #endif  // USE_EMULATION
+#ifdef USE_BLE_ESP32
+    ExtRestartBLEIfEnabled();
+#endif
 
   } else {
 //    AddLog(LOG_LEVEL_DEBUG, PSTR("UPL: Services disabled"));

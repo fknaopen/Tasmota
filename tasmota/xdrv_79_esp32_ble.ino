@@ -347,6 +347,10 @@ TaskHandle_t TasmotaMainTask;
 
 
 static int BLEMasterEnable = 0;
+static uint8_t BLEEnableUnsaved = 0;
+static uint8_t BLEEnableMask = 1;
+
+
 static int BLEInitState = 0;
 static int BLERunningScan = 0;
 static uint32_t BLEScanCount = 0;
@@ -424,7 +428,7 @@ std::deque<BLE_ESP32::ble_alias_t*> aliases;
 #define D_CMND_BLE "BLE"
 
 const char kBLE_Commands[] PROGMEM = D_CMND_BLE "|"
-  "Period|Adv|Op|Mode|Details|Scan|Alias|Name|Debug|Devices|MaxAge|AddrFilter";
+  "Period|Adv|Op|Mode|Details|Scan|Alias|Name|Debug|Devices|MaxAge|AddrFilter|EnableUnsaved";
 
 static void CmndBLEPeriod(void);
 static void CmndBLEAdv(void);
@@ -438,6 +442,7 @@ static void CmndBLEDebug(void);
 static void CmndBLEDevices(void);
 static void CmndBLEMaxAge(void);
 static void CmndBLEAddrFilter(void);
+static void CmndBLEEnableUnsaved(void);
 
 void (*const BLE_Commands[])(void) PROGMEM = {
   &BLE_ESP32::CmndBLEPeriod,
@@ -451,7 +456,8 @@ void (*const BLE_Commands[])(void) PROGMEM = {
   &BLE_ESP32::CmndBLEDebug,
   &BLE_ESP32::CmndBLEDevices,
   &BLE_ESP32::CmndBLEMaxAge,
-  &BLE_ESP32::CmndBLEAddrFilter
+  &BLE_ESP32::CmndBLEAddrFilter,
+  &BLE_ESP32::CmndBLEEnableUnsaved
 };
 
 const char *successStates[] PROGMEM = {
@@ -1517,13 +1523,6 @@ static void BLEInit(void) {
 
   BLEInitState = 1;
 
-  // dont start of disabled
-  BLEMasterEnable = Settings.flag5.mi32_enable;
-  if (!BLEMasterEnable) return;
-
-
-  StartBLE();
-
   return;
 }
 
@@ -2155,6 +2154,23 @@ void BLEEvery50mSecond(){
 }
 
 
+static void stopStartBLE(){
+  // dont start of disabled
+  uint8_t enable = (Settings.flag5.mi32_enable || BLEEnableUnsaved) && BLEEnableMask;
+
+  if (enable != BLEMasterEnable){
+    if (enable){
+      if (StartBLE()){
+        BLEMasterEnable = enable;
+      }
+    } else {
+      if (StopBLE()){
+        BLEMasterEnable = enable;
+      }
+    }
+    AddLog(LOG_LEVEL_INFO,PSTR("BLE: MasterEnable->%d"), BLEMasterEnable);
+  }
+}
 
 /**
  * @brief Main loop of the driver, "high level"-loop
@@ -2167,20 +2183,7 @@ static void BLEEverySecond(bool restart){
 
   checkDeviceTimouts();
 
-
-  if (Settings.flag5.mi32_enable != BLEMasterEnable){
-    if (Settings.flag5.mi32_enable){
-      if (StartBLE()){
-        BLEMasterEnable = Settings.flag5.mi32_enable;
-      }
-    } else {
-      if (StopBLE()){
-        BLEMasterEnable = Settings.flag5.mi32_enable;
-      }
-    }
-    AddLog(LOG_LEVEL_INFO,PSTR("BLE: MasterEnable->%d"), BLEMasterEnable);
-  }
-
+  stopStartBLE();
 
   // check for application callbacks here.
   // this may remove complete items.
@@ -2322,12 +2325,18 @@ int extQueueOperation(BLE_ESP32::generic_sensor_t** op){
     AddLog(LOG_LEVEL_ERROR,PSTR("BLE: op invalid"));
     return 0;
   }
+
+  if (!BLEMasterEnable){
+    AddLog(LOG_LEVEL_ERROR,PSTR("BLE: extQueueOperation: BLE is deiabled"));
+    return 0;
+  }
+
   (*op)->state = GEN_STATE_START; // trigger request later
   (*op)->opid = lastopid++;
 
   int res = addOperation(&queuedOperations, op);
   if (!res){
-    AddLog(LOG_LEVEL_ERROR,PSTR("BLE: extQueueOperation: op added id %d failed"), (lastopid-1));
+    AddLog(LOG_LEVEL_ERROR,PSTR("BLE: extQueueOperation: op adding id %d failed"), (lastopid-1));
   }
   return res;
 }
@@ -2459,7 +2468,7 @@ static int StopBLE(void){
       AddLog(LOG_LEVEL_INFO,PSTR("BLE: StopBLE - BLEStop->1"));
       BLEStopAt = esp_timer_get_time();
       // give a little time for it to stop.
-      vTaskDelay(1000/ portTICK_PERIOD_MS);
+      vTaskDelay(100/ portTICK_PERIOD_MS);
       return 1;
     }
     AddLog(LOG_LEVEL_ERROR,PSTR("BLE: StopBLE - wait as BLEStop==1"));
@@ -2660,6 +2669,21 @@ void CmndBLEMode(void){
       ResponseCmndChar("InvalidIndex");
       break;
   }
+}
+
+//////////////////////////////////////////////////////////////
+// Enables BLE even if master enable is unset
+// use to temporarily enable after boot - e.g. at the end of autoexec
+void CmndBLEEnableUnsaved(void){
+  int val = -1;
+  if (XdrvMailbox.data_len > 0) {
+    val = XdrvMailbox.payload;
+  }
+
+  if (val >= 0){
+    BLEEnableUnsaved = val;
+  }
+  ResponseCmndNumber(BLEEnableUnsaved);
 }
 
 
@@ -3476,8 +3500,15 @@ void HandleBleConfiguration(void)
 
 int ExtStopBLE(){
   AddLog(LOG_LEVEL_INFO, PSTR("BLE: Stopping if active"));
-  BLE_ESP32::BLEMode = BLE_ESP32::BLEModeDisabled;
-  BLE_ESP32::StopBLE();
+  BLE_ESP32::BLEEnableMask = 0; 
+  BLE_ESP32::stopStartBLE();
+  return 0;
+}
+
+int ExtRestartBLEIfEnabled(){
+  AddLog(LOG_LEVEL_INFO, PSTR("BLE: Starting if active"));
+  BLE_ESP32::BLEEnableMask = 1; 
+  BLE_ESP32::stopStartBLE();
   return 0;
 }
 
