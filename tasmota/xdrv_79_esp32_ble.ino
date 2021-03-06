@@ -47,17 +47,49 @@
 
     Cmnds:
       BLEPeriod
-      BLEAdv
+        set the period for BLE tele
+      BLEAdv - unused
       BLEOp
+        advanced - perform a BLE active operation
+        mainly for debug or unsupported devices. 
       BLEMode
+        control scanning mode 
+        0 - stop BLE
+        1 - run BLE but manual scan
+        *2 - run BLE with auto scan
       BLEDetails
+        display details of adverts 
+        BLEdetails0 - no display
+        BLEdetails2 <mac|alias> - display for one device
+        BLEdetails3 - display for ALL devices
       BLEScan
+        performs a manual scan or set passive/active
+        *BLEScan0 0 - set passive scan
+        BLEScan0 1 - set active scan (you may get names)
+        BLEScan1 nn - start a manula scan for nn seconds
       BLEAlias
+        <mac>=<name> <mac>=<name> - set one or more aliases for addresses
       BLEName
+        read/write the name from a device using active read of a std characteristic
+        BLEName <mac|alias> - read the name
+        BLEName <mac|alias> <name> - write the name - few devices support this
       BLEDebug
+        enable more debug
+        BLEDebug0 - turn off
+        BLEDebug|BLEDebug1 - turn on
       BLEDevices
+        display or clear the devices list
+        BLEDevices0 - clear list
+        BLEDevices1 - publish on tele 
       BLEMaxAge
+        display or set the max age of a BLE address before being forgotten
+        BLEMaxAge - display the setting
+        BLEMaxAge nn - set to nn seconds
       BLEAddrFilter
+        *0/1/2/3 - the maximum 'type' of BLE address recevied
+      BLEEnableUnsaved
+        *0/1 - if BLE is disabled, this can be used to enable BLE without
+        it being saved - useful as the last command in autoexec.bat
 
   Other drivers can add callbacks to receive advertisements
   Other drivers can add 'operations' to be performed and receive callbacks from the operation's success or failure
