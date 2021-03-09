@@ -30,10 +30,13 @@ e.g.
 trv 001A22092EE0 settemp 22.5
 
 trvperiod n - set polling period in seconds (default teleperiod at boot)
-trvonlyaliased 0/1 - only hear devices with BLEAlias set
-trvMatchPrefix 0/1 - if set, then it will add trvs to the seen list which have mac starting with :
+trvonlyaliased *0/1 - only hear devices with BLEAlias set
+trvMatchPrefix 0/*1 - if set, then it will add trvs to the seen list which have mac starting with :
   macs in macprefixes, currently only 001a22
 Note: anything with BLEAlias starting "EQ3" will be added to the seen list.
+trvHideFailedPoll 0/*1 - if set, then failed polls will not be sent to EQ3
+trvMinRSSI -n - the minimum RSSI value at which to attempt to poll
+
 
 trv reset - clear device list
 trv devlist - report seen devices.  Active scanning required, not passive, as it looks for names
@@ -139,18 +142,24 @@ void CmndTrv(void);
 void CmndTrvPeriod(void);
 void CmndTrvOnlyAliased(void);
 void CmndTrvMatchPrefix(void);
+void CmndTrvMinRSSI(void);
+void CmndTrvHideFailedPoll(void);
 
 const char kEQ3_Commands[] PROGMEM = D_CMND_EQ3"|"
   "|"
   "period|"
   "onlyaliased|"
-  "MatchPrefix";
+  "MatchPrefix|"
+  "MinRSSI|"
+  "HideFailedPoll";
 
 void (*const EQ3_Commands[])(void) PROGMEM = {
   &CmndTrv,
   &CmndTrvPeriod,
   &CmndTrvOnlyAliased,
-  &CmndTrvMatchPrefix
+  &CmndTrvMatchPrefix,
+  &CmndTrvMinRSSI,
+  &CmndTrvHideFailedPoll
 };
 
 
@@ -224,6 +233,8 @@ int seconds = 20;
 int EQ3CurrentSingleSlot = 0;
 
 uint8_t EQ3TopicStyle = 1;
+uint8_t EQ3HideFailedPoll = 1;
+int8_t trvMinRSSI = -99;
 
 // control of timing of sending polling.
 // we leave an interval between polls to allow scans to take place
@@ -583,6 +594,14 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
   int type = STAT;
   if (cmdtype){
     type = STAT;
+  } else {
+    // it IS a poll command
+    if (EQ3HideFailedPoll){
+      if (!success){
+        AddLog(LOG_LEVEL_DEBUG, PSTR("EQ3 %s poll fail not sent because EQ3HideFailedPoll"), addrStr(addrev));
+        return res;
+      }
+    }
   }
 
   char *topic = topicPrefix(type, addrev, useAlias);
@@ -952,6 +971,15 @@ void EQ3EverySecond(bool restart){
             nextEQ3Poll = i+1;
             continue;
           }
+
+          // trvMinRSSI
+          // find the device in BLE to get RSSI
+          if (EQ3Devices[i].RSSI < trvMinRSSI){
+            AddLog(LOG_LEVEL_DEBUG, PSTR("EQ3 %s RSSI %d < min %d, poll suppressed"), addrStr(EQ3Devices[i].addr), EQ3Devices[i].RSSI, trvMinRSSI);
+            nextEQ3Poll = i+1;
+            continue;
+          }
+
           EQ3Send(EQ3Devices[i].addr, PSTR("poll"), nullptr, nullptr, 1);
           nextEQ3Poll = i+1;
           intervalSecondsCounter = intervalSeconds;
@@ -1540,6 +1568,21 @@ void CmndTrvMatchPrefix(void){
     EQ3MatchPrefix = XdrvMailbox.payload;
   }
   ResponseCmndNumber(EQ3MatchPrefix);
+}
+
+void CmndTrvMinRSSI(void){
+  if (XdrvMailbox.data_len > 0) {
+    trvMinRSSI = atoi(XdrvMailbox.data);
+  }
+  // signed number
+  Response_P(PSTR("{\"%s\":%d}"), XdrvMailbox.command, trvMinRSSI);
+}
+
+void CmndTrvHideFailedPoll(void){
+  if (XdrvMailbox.data_len > 0) {
+    EQ3HideFailedPoll = XdrvMailbox.payload;
+  }
+  ResponseCmndNumber(EQ3HideFailedPoll);
 }
 
 
