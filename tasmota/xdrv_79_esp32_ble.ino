@@ -1990,8 +1990,8 @@ static void BLETaskRunCurrentOperation(BLE_ESP32::generic_sensor_t** pCurrentOpe
 
   } else { // connect itself failed
     newstate = GEN_STATE_FAILED_CONNECT;
-#ifdef NIMBLE_CLIENT_HAS_GETRESULT
-    int rc = pClient->getResult();
+#ifdef NIMBLE_CLIENT_HAS_RESULT
+    int rc = pClient->m_result;
 
     switch (rc){
       case (0x0200+BLE_ERR_CONN_LIMIT ):

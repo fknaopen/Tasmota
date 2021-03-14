@@ -72,6 +72,8 @@ public:
                                                                  uint16_t latency, uint16_t timeout);
     void                                        discoverAttributes();
 
+    int                                         m_result;
+
 private:
     NimBLEClient(const NimBLEAddress &peerAddress);
     ~NimBLEClient();

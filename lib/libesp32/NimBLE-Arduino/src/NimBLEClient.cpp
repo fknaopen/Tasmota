@@ -217,6 +217,8 @@ bool NimBLEClient::connect(const NimBLEAddress &address, bool deleteAttibutes) {
         rc = ble_gap_connect(NimBLEDevice::m_own_addr_type, &peerAddr_t,
                              m_connectTimeout, &m_pConnParams,
                              NimBLEClient::handleGapEvent, this);
+        m_result = rc;
+
         switch (rc) {
             case 0:
                 break;
