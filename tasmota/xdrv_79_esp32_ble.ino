@@ -1996,25 +1996,20 @@ static void BLETaskRunCurrentOperation(BLE_ESP32::generic_sensor_t** pCurrentOpe
 
     switch (rc){
       case (0x0200+BLE_ERR_CONN_LIMIT ):
-#ifdef BLE_ESP32_DEBUG
         AddLog(LOG_LEVEL_ERROR,PSTR("BLE: Hit connection limit? - restarting NimBLE"));
-#endif
         BLERestartNimBLE = 1;
         BLERestartBLEReason = BLE_RESTART_BLE_REASON_CONN_LIMIT;
         break;
       case (0x0200+BLE_ERR_ACL_CONN_EXISTS):
-#ifdef BLE_ESP32_DEBUG
         AddLog(LOG_LEVEL_ERROR,PSTR("BLE: Connection exists? - restarting NimBLE"));
-#endif
         BLERestartNimBLE = 1;
         BLERestartBLEReason = BLE_RESTART_BLE_REASON_CONN_EXISTS;
         break;
     }
-#endif
-
+    AddLog(LOG_LEVEL_ERROR,PSTR("BLE: failed to connect to device low level rc 0x%x"), rc);
+#else
     // failed to connect
-#ifdef BLE_ESP32_DEBUG
-    AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: failed to connect to device"));
+    AddLog(LOG_LEVEL_ERROR,PSTR("BLE: failed to connect to device"));
 #endif
   }
   op->state = newstate;
