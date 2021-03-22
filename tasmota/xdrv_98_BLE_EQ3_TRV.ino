@@ -200,7 +200,7 @@ const char EQ3_rw_Char[] PROGMEM = "3fa4585a-ce4a-3bad-db4b-b8df8179ea09";
 const char EQ3_notify_Char[] PROGMEM = "d0e8434d-cd29-0996-af41-6c90f4e0eb2a";
 
 struct eq3_device_tag{
-  uint8_t addr[6];
+  uint8_t addr[7];
   int8_t RSSI;
   uint64_t timeoutTime;
   uint8_t pairing;
@@ -217,7 +217,7 @@ int retries = 0;
 // allow 240s before timeout of sa device - based on that we restart BLE if we don't see adverts for 120s
 #define EQ3_TIMEOUT 240L
 
-uint8_t pairingaddr[6] = {0,0,0,0,0,0};
+uint8_t pairingaddr[7] = {0,0,0,0,0,0};
 char pairingserial[20];
 uint8_t pairing = 0;
 
@@ -244,7 +244,7 @@ int nextEQ3Poll = EQ3_NUM_DEVICESLOTS; // set to zero to start a poll cycle
 
 #pragma pack( push, 1 )  // aligned structures for size
 struct op_t {
-  uint8_t addr[6];
+  uint8_t addr[7];
   uint8_t towrite[16];
   uint8_t writelen;
   uint8_t cmdtype;
@@ -390,7 +390,7 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
   int maxlen = sizeof(TasmotaGlobal.mqtt_data);
   opInProgress = 0;
 
-  uint8_t addrev[6];
+  uint8_t addrev[7];
   const uint8_t *native = op->addr.getNative();
   memcpy(addrev, native, 6);
   BLE_ESP32::ReverseMAC(addrev);
@@ -614,7 +614,7 @@ int EQ3GenericOpCompleteFn(BLE_ESP32::generic_sensor_t *op){
   opInProgress = 0;
   
   if (op->state <= GEN_STATE_FAILED){
-    uint8_t addrev[6];
+    uint8_t addrev[7];
     const uint8_t *native = op->addr.getNative();
     memcpy(addrev, native, 6);
     BLE_ESP32::ReverseMAC(addrev);
@@ -1483,14 +1483,14 @@ int CmndTrvNext(int index, char *data){
 
 
       int useAlias = 0;
-      uint8_t addrbin[6];
+      uint8_t addrbin[7];
       int addrres = BLE_ESP32::getAddr(addrbin, p);
       if (addrres){
         if (addrres == 2){
           AddLog(LOG_LEVEL_DEBUG,PSTR("EQ3 addr used alias: %s"), p);
           useAlias = 1;
         }
-        NimBLEAddress addr(addrbin);
+        NimBLEAddress addr(addrbin, addrbin[6]);
 
 #ifdef EQ3_DEBUG
         //AddLog(LOG_LEVEL_INFO,PSTR("EQ3 cmd addr: %s -> %s"), p, addr.toString().c_str());
@@ -1637,7 +1637,7 @@ bool mqtt_direct(){
   int remains = 120;
   memset(tmp, 0, sizeof(tmp));
   p = tmp;
-  uint8_t addr[6];
+  uint8_t addr[7];
   int useAlias = BLE_ESP32::getAddr(addr, items[MACindex]);
   int res = 6; // invalid address/alias
 
