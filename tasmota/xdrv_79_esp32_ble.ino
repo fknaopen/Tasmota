@@ -62,6 +62,7 @@
         BLEdetails0 - no display
         BLEdetails2 <mac|alias> - display for one device
         BLEdetails3 - display for ALL devices
+        BLEdetails4 - display for all aliased devices
       BLEScan
         performs a manual scan or set passive/active
         *BLEScan0 0 - set passive scan
@@ -1147,7 +1148,24 @@ void setDetails(ble_advertisment_t *ad){
   len = strlen(p);
   p += len;
   maxlen -= len;
+  if (ad->addrtype){
+    *(p++) = '/';  
+    *(p++) = 0x30+ad->addrtype;  
+  }
   *(p++) = '\"'; maxlen--;
+
+  const char *alias = BLE_ESP32::getAlias(ad->addr);
+  if (alias && (*alias)){
+    strcpy(p, ",\"a\":\"");
+    len = strlen(p);
+    p += len;
+    maxlen -= len;
+    strcpy(p, alias);
+    len = strlen(p);
+    p += len;
+    maxlen -= len;
+    *(p++) = '\"'; maxlen--;
+  }
 
   sprintf(p, ",\"RSSI\":%d", ad->RSSI);
   len = strlen(p);
@@ -1350,6 +1368,14 @@ class BLEAdvCallbacks: public NimBLEAdvertisedDeviceCallbacks {
         case 3:{ // all adverts for ALL DEVICES - may not get them all
           // ignore from here on if filtered on addrtype
           if (BLEAdvertisment.addrtype > BLEAddressFilter){
+            return;
+          }
+          setDetails(&BLEAdvertisment);
+        } break;
+        case 4:{ // all adverts for all aliased DEVICES - may not get them all
+          // ignore from here on if filtered on addrtype
+          const char *alias = BLE_ESP32::getAlias(BLEAdvertisment.addr);
+          if (!alias || !(*alias)){
             return;
           }
           setDetails(&BLEAdvertisment);
@@ -2767,6 +2793,11 @@ void CmndBLEDetails(void){
     } break;
 
     case 3:{
+      BLEDetailsRequest = XdrvMailbox.index;
+      ResponseCmndNumber(BLEDetailsRequest);
+    } break;
+
+    case 4:{
       BLEDetailsRequest = XdrvMailbox.index;
       ResponseCmndNumber(BLEDetailsRequest);
     } break;
