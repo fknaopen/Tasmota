@@ -19,6 +19,8 @@
 
   --------------------------------------------------------------------------------------------
   Version yyyymmdd  Action    Description
+  -       20210402  additions expand MAC storage to 7, enables type of mac.
+                              Add bledetails4
   --------------------------------------------------------------------------------------------
 */
 
@@ -44,6 +46,21 @@
       connect/read from a MAC/Service/Characteristic
       connect/write/awaitnotify from a MAC/Service/Characteristic/NotifyCharacteristic
       connect/read/awaitnotify from a MAC/Service/Characteristic/NotifyCharacteristic
+
+    Notes on MAC addresses:
+      BLE MAC addresses come in different 'flavours'
+      Anywhere where you enter a MNAC addr, you can now use these forms:
+        AABBCCDDEEFF
+        AABBCCDDEEFF/n (n = 0..3) where n indicates the TYPE of address
+        most notably, if you wish to connect to a random address (n = 1), then you must specify,
+        else it will not connect.
+        e.g. to alias a random address to fred: 
+        BLEAlias fred=1234567890/1
+        to connect and read fred's name:
+        BLEName fred
+        BLEName 1234567890/1 - would succeed (if freds name can be read)
+        BLEName 1234567890 - would fail
+      technical changes: all MAC storage has been increased to 7 bytes, with the last byte being the type...
 
     Cmnds:
       BLEPeriod
@@ -119,18 +136,14 @@ i.e. the Bluetooth of the ESP can be shared without conflict.
 #define BLE_ESP32_ALIASES
 
 // uncomment for more diagnostic/information messages - + more flash use.
-#define BLE_ESP32_DEBUG
+//#define BLE_ESP32_DEBUG
 
 #define XDRV_79                    79
-#define USE_MI_DECRYPTION
 
 #include <vector>
 #include <deque>
 #include <string.h>
 #include <cstdarg>
-#ifdef USE_MI_DECRYPTION
-#include <t_bearssl.h>
-#endif //USE_MI_DECRYPTION
 
 #include <NimBLEDevice.h>
 #include <NimBLEAdvertisedDevice.h>
@@ -141,8 +154,10 @@ i.e. the Bluetooth of the ESP can be shared without conflict.
 // from ble_gap.c
 extern "C" void ble_gap_conn_broken(uint16_t conn_handle, int reason);
 
+#ifdef BLE_ESP32_EXAMPLES
 void installExamples();
 void sendExample();
+#endif
 
 
 namespace BLE_ESP32 {
@@ -1250,7 +1265,7 @@ void postAdvertismentDetails(){
     // we got the data, give before MQTT call.
     localmutex.give();
     // no retain - this is present devices, not historic
-    MqttPublishPrefixTopic_P(TELE, PSTR("BLE"), 0);
+    MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR("BLE"), 0);
   } else {
   }
 }
@@ -1589,10 +1604,12 @@ static void BLEInit(void) {
     }
   }
 
-  // this is only for testing, does nothin if examples are undefed
+#ifdef BLE_ESP32_EXAMPLES
+// this is only for testing, does nothin if examples are undefed
   installExamples();
   //initSafeLog();
   initSeenDevices();
+#endif
 
   uint64_t now = esp_timer_get_time();
   BLEScanLastAdvertismentAt = now; // initialise the time of the last advertisment
@@ -2035,7 +2052,7 @@ static void BLETaskRunCurrentOperation(BLE_ESP32::generic_sensor_t** pCurrentOpe
 
   } else { // connect itself failed
     newstate = GEN_STATE_FAILED_CONNECT;
-#define NIMBLE_CLIENT_HAS_RESULT 1
+//#define NIMBLE_CLIENT_HAS_RESULT 1
 #ifdef NIMBLE_CLIENT_HAS_RESULT
     int rc = pClient->m_result;
 
@@ -2288,8 +2305,8 @@ static void BLEEverySecond(bool restart){
     // 2 seconds to go, post to BLE topic on MQTT our reason
     if (BLERestartTasmota == 2){
       if (!BLERestartTasmotaReason) BLERestartTasmotaReason = BLE_RESTART_TEAMOTA_REASON_UNKNOWN;
-      snprintf_P(TasmotaGlobal.mqtt_data, sizeof(TasmotaGlobal.mqtt_data), PSTR("{\"reboot\":\"%s\"}"), BLERestartTasmotaReason);
-      MqttPublishPrefixTopic_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
+      Response_P(PSTR("{\"reboot\":\"%s\"}"), BLERestartTasmotaReason);
+      MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
       AddLog(LOG_LEVEL_ERROR,PSTR("BLE: Failure! Restarting Tasmota in %d seconds because %s"), BLERestartTasmota, BLERestartTasmotaReason);
     }
 
@@ -2301,8 +2318,8 @@ static void BLEEverySecond(bool restart){
   }
 
   if (BLERestartBLEReason){ // just use the ptr as the trigger to send MQTT
-    snprintf_P(TasmotaGlobal.mqtt_data, sizeof(TasmotaGlobal.mqtt_data), PSTR("{\"blerestart\":\"%s\"}"), BLERestartBLEReason);
-    MqttPublishPrefixTopic_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
+    Response_P(PSTR("{\"blerestart\":\"%s\"}"), BLERestartBLEReason);
+    MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
     AddLog(LOG_LEVEL_ERROR,PSTR("BLE: Failure! Restarting BLE Stack because %s"), BLERestartBLEReason);
     BLERestartBLEReason = nullptr;
   }
@@ -3137,11 +3154,7 @@ static void BLEPostMQTTSeenDevices(int type) {
   do {
     remains = getSeenDevicesToJson(dest, maxlen);
     // no retain - this is present devices, not historic
-    if (type == 1){
-      MqttPublishPrefixTopic_P(TELE, PSTR("BLE"), 0);
-    } else {
-      MqttPublishPrefixTopic_P(STAT, PSTR("BLE"), 0);
-    }
+    MqttPublishPrefixTopicRulesProcess_P((1== type) ? TELE : STAT, PSTR("BLE"));
   } while (remains);
 //  }
 }
@@ -3156,8 +3169,8 @@ static void BLEPostMQTT(bool onlycompleted) {
 #endif
     if (prepOperation && !onlycompleted){
       std::string out = BLETriggerResponse(prepOperation);
-      snprintf_P(TasmotaGlobal.mqtt_data, sizeof(TasmotaGlobal.mqtt_data), PSTR("%s"), out.c_str());
-      MqttPublishPrefixTopic_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
+      Response_P(PSTR("%s"), out.c_str());
+      MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
 #ifdef BLE_ESP32_DEBUG
       if (BLEDebugMode > 0) AddLog(LOG_LEVEL_INFO,PSTR("BLE: prep sent %s"), out.c_str());
 #endif
@@ -3176,8 +3189,8 @@ static void BLEPostMQTT(bool onlycompleted) {
         } else {
           std::string out = BLETriggerResponse(toSend);
           localmutex.give();
-          snprintf_P(TasmotaGlobal.mqtt_data, sizeof(TasmotaGlobal.mqtt_data), PSTR("%s"), out.c_str());
-          MqttPublishPrefixTopic_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
+          Response_P(PSTR("%s"), out.c_str());
+          MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
 #ifdef BLE_ESP32_DEBUG
           if (BLEDebugMode > 0) AddLog(LOG_LEVEL_INFO,PSTR("BLE: queued %d sent %s"), i, out.c_str());
 #endif
@@ -3198,8 +3211,8 @@ static void BLEPostMQTT(bool onlycompleted) {
         } else {
           std::string out = BLETriggerResponse(toSend);
           localmutex.give();
-          snprintf_P(TasmotaGlobal.mqtt_data, sizeof(TasmotaGlobal.mqtt_data), PSTR("%s"), out.c_str());
-          MqttPublishPrefixTopic_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
+          Response_P(PSTR("%s"), out.c_str());
+          MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
 #ifdef BLE_ESP32_DEBUG
           if (BLEDebugMode > 0) AddLog(LOG_LEVEL_INFO,PSTR("BLE: curr %d sent %s"), i, out.c_str());
 #endif
@@ -3221,8 +3234,8 @@ static void BLEPostMQTT(bool onlycompleted) {
           if (BLEDebugMode > 0) AddLog(LOG_LEVEL_DEBUG,PSTR("BLE: mqttOperation removed opid %d"), toSend->opid);
 #endif
           std::string out = BLETriggerResponse(toSend);
-          snprintf_P(TasmotaGlobal.mqtt_data, sizeof(TasmotaGlobal.mqtt_data), PSTR("%s"), out.c_str());
-          MqttPublishPrefixTopic_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
+          Response_P(PSTR("%s"), out.c_str());
+          MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
           // we alreayd removed this from the queues, so now delete
           delete toSend;
           //break;
@@ -3231,8 +3244,8 @@ static void BLEPostMQTT(bool onlycompleted) {
       } while (1);
     }
   } else {
-    snprintf_P(TasmotaGlobal.mqtt_data, sizeof(TasmotaGlobal.mqtt_data), PSTR("{\"BLEOperation\":{}}"));
-    MqttPublishPrefixTopic_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
+    Response_P(PSTR("{\"BLEOperation\":{}}"));
+    MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
   }
 }
 
@@ -3346,7 +3359,7 @@ static void BLEShowStats(){
   uint32_t deviceCount = seenDevices.size();
   ResponseTime_P(PSTR(""));
   ResponseAppend_P(PSTR(",\"BLE\":{\"scans\":%u,\"adverts\":%u,\"devices\":%u,\"resets\":%u}}"), BLEScanCount, totalCount, deviceCount, BLEResets);
-  MqttPublishPrefixTopic_P(TELE, PSTR("BLE"), 0);
+  MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR("BLE"), 0);
 }
 
 
@@ -3361,7 +3374,7 @@ static void BLEShowStats(){
     ResponseAppend_P(PSTR("{\"%s\":\"%s\"}"), tmp, aliases[i]->name);
   }
   ResponseAppend_P(PSTR("]}"));
-  MqttPublishPrefixTopic_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
+  MqttPublishPrefixTopicRulesProcess_P(TELE, PSTR("BLE"), Settings.flag.mqtt_sensor_retain);
 }*/
 
 void BLEAliasListResp(){
@@ -3644,6 +3657,9 @@ bool Xdrv79(uint8_t function)
 
 
 
+#ifdef BLE_ESP32_EXAMPLES
+
+
 /*********************************************************************************************\
  * Example Advertisment callback
 \*********************************************************************************************/
@@ -3721,7 +3737,8 @@ void sendExample(){
 
 #endif
 }
-
+// end #ifdef BLE_ESP32_EXAMPLES
+#endif 
 
 
 #endif
