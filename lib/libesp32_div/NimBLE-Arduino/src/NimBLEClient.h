@@ -74,6 +74,8 @@ public:
     void                                        discoverAttributes();
     NimBLEConnInfo                              getConnInfo();
 
+    int                                         m_result;
+
 private:
     NimBLEClient(const NimBLEAddress &peerAddress);
     ~NimBLEClient();

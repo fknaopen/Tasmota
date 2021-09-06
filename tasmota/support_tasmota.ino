@@ -1054,6 +1054,7 @@ void Every100mSeconds(void)
 #ifdef USE_BLE_ESP32
   // declare the fn
   int ExtStopBLE();
+  int ExtRestartBLEIfEnabled();
 #endif  // USE_BLE_ESP32
 
 bool CommandsReady(void) {
