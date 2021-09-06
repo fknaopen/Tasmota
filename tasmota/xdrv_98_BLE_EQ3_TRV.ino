@@ -386,8 +386,7 @@ int EQ3QueueOp(const uint8_t *MAC, const uint8_t *data, int datalen, int cmdtype
 
 int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
   int res = 0;
-  char *p = TasmotaGlobal.mqtt_data;
-  int maxlen = sizeof(TasmotaGlobal.mqtt_data);
+  char p[40];
   opInProgress = 0;
 
   uint8_t addrev[7];
@@ -413,26 +412,25 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
     cmdType = cmdnames[cmdtype];
   }
 
-  strcpy(p, "{");
-  p++;
+  TasmotaGlobal.mqtt_data += "{";
   sprintf(p, "\"cmd\":\"%s\"", cmdType);
-  p += strlen(p);
+  TasmotaGlobal.mqtt_data += p;
 
   sprintf(p, ",\"result\":\"%s\"", success? "ok":"fail");
-  p += strlen(p);
+  TasmotaGlobal.mqtt_data += p;
   
   sprintf(p, ",\"MAC\":\"%s\"", addrStr(addrev));
-  p += strlen(p);
+  TasmotaGlobal.mqtt_data += p;
 
   const char *host = NetworkHostname();
   sprintf(p, ",\"tas\":\"%s\"", host);
-  p += strlen(p);
+  TasmotaGlobal.mqtt_data += p;
   
   if (cmdtype == 1){
     char raw[40];
     BLE_ESP32::dump(raw, 40, op->dataNotify, op->notifylen);
     sprintf(p, ",\"raw\":\"%s\"", raw);
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
   }
 
   uint8_t *status = {0};
@@ -458,22 +456,22 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
     statlen = eq3->lastStatusLen;
     stattime = eq3->lastStatusTime;
     sprintf(p, ",\"RSSI\":%d", eq3->RSSI);
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
   }
 
   if ((statlen >= 6) && (status[0] == 2) && (status[1] == 1)){
     sprintf(p, ",\"stattime\":%u", stattime);
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
 
     sprintf(p, ",\"temp\":%2.1f", ((float)status[5])/2);
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
 
     sprintf(p, ",\"posn\":%d", status[3]);
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
 
     int stat = status[2];
     sprintf(p, ",\"mode\":");
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
 
     switch (stat & 3){
       case 0:
@@ -489,10 +487,10 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
         sprintf(p, "\"manualholiday\"");
         break;
     }
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
 
     sprintf(p, ",\"hassmode\":");
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
 
     do {
       //0201283B042A
@@ -509,23 +507,23 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
       
       break;
     } while (0);
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
 
 
     sprintf(p, ",\"boost\":\"%s\"", (stat & 4)?"active":"inactive");
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
 
     sprintf(p, ",\"dst\":\"%s\"", (stat & 8)?"set":"unset");
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
 
     sprintf(p, ",\"window\":\"%s\"", (stat & 16)?"open":"closed");
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
 
     sprintf(p, ",\"state\":\"%s\"", (stat & 32)?"locked":"unlocked");
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
 
     sprintf(p, ",\"battery\":\"%s\"", (stat & 128)?"LOW":"GOOD");
-    p += strlen(p); 
+    TasmotaGlobal.mqtt_data += p;
   }
 
   if ((statlen >= 10) && (status[0] == 2) && (status[1] == 1)){
@@ -538,14 +536,14 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
       status[6],
       hh, mm
       );
-    p += strlen(p); 
+    TasmotaGlobal.mqtt_data += p;
   }
 
   if (success) {
     // now to parse other data - this may not have been a stat message
     if ((op->notifylen >= 3) && (op->dataNotify[0] == 2) && (op->dataNotify[1] == 2)){
       sprintf(p, ",\"profiledayset\":%d", op->dataNotify[2]);
-      p += strlen(p); 
+      TasmotaGlobal.mqtt_data += p;
     }
 
     if ((op->notifylen >= 16) && (op->dataNotify[0] == 0x21)){
@@ -561,7 +559,7 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
 // byte (12,13): 22 90 (unused)
 // byte (14,15): 22 90 (unused)      
       sprintf(p, ",\"profileday%d\":\"", op->dataNotify[1]);
-      p += strlen(p);
+      TasmotaGlobal.mqtt_data += p;
       uint8_t *data = op->dataNotify + 2;
       for (int i = 0; i < 7; i++){
         float t = *(data++);
@@ -571,7 +569,7 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
         int hh = mm / 60;
         mm = mm % 60;
         sprintf(p, "%2.1f-%02d:%02d", t, hh, mm);
-        p += strlen(p);
+        TasmotaGlobal.mqtt_data += p;
 
         // stop if the last one is 24.
         if (hh == 24){
@@ -579,18 +577,17 @@ int EQ3ParseOp(BLE_ESP32::generic_sensor_t *op, bool success, int retries){
         }
 
         if (i < 6){
-          *(p++) = ',';
+          TasmotaGlobal.mqtt_data += ",";
         }
       }
-      *(p++) = '\"';
+      TasmotaGlobal.mqtt_data += "\"";
     }
 
     res = 1;
   }
 
-  *(p++) = '}';
-  *(p++) = 0;
-
+  TasmotaGlobal.mqtt_data += "}";
+  
   int type = STAT;
   if (cmdtype){
     type = STAT;
@@ -899,7 +896,7 @@ void EQ3Init(void) {
   AddLog(LOG_LEVEL_INFO,PSTR("EQ3: init: request callbacks"));
 #endif
 
-  EQ3Period = Settings.tele_period;
+  EQ3Period = Settings->tele_period;
 
   return;
 }
@@ -920,22 +917,18 @@ int EQ3Send(const uint8_t* addr, const char *cmd, char* param, char* param2, int
 
 void EQ3EverySecond(bool restart){
   if (pairing){
-    char *p = TasmotaGlobal.mqtt_data;
-    int maxlen = sizeof(TasmotaGlobal.mqtt_data);
+    char p[40];
 
     strcpy(p, "{\"pairing\":\"");
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
     BLE_ESP32::dump(p, 20, pairingaddr, 6);
-    p += strlen(p);
-    *(p++) = '\"';
+    TasmotaGlobal.mqtt_data += p;
+    TasmotaGlobal.mqtt_data += "\"";
     strcpy(p, ",\"serial\":\"");
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
     strncpy(p, pairingserial, sizeof(pairingserial));
-    p[sizeof(pairingserial)-1] = 0;
-    p += strlen(p);
-    *(p++) = '\"';
-    *(p++) = '}';
-    *(p++) = 0;
+    TasmotaGlobal.mqtt_data += p;
+    TasmotaGlobal.mqtt_data += "\"}";
 
     char addrstr[4+8*2+2] = "EQ3/";
     BLE_ESP32::dump(&addrstr[4], 8*2+2, pairingaddr, 6);
@@ -1001,35 +994,27 @@ void EQ3EverySecond(bool restart){
 int EQ3SendCurrentDevices(){
   // send the active devices
 
-  char *p = TasmotaGlobal.mqtt_data;
-  int maxlen = sizeof(TasmotaGlobal.mqtt_data);
+  char p[40];
 
   strcpy(p, "{\"devices\":{");
-  p += strlen(p);
+  TasmotaGlobal.mqtt_data += p;
 
   int added = 0;
   for(int i = 0; i < EQ3_NUM_DEVICESLOTS; i++){
     if (!EQ3Devices[i].timeoutTime)
       continue;
     if (added){
-      *(p++) = ',';
+      TasmotaGlobal.mqtt_data += ",";
     }
-    *(p++) = '\"';
+    TasmotaGlobal.mqtt_data += "\"";
     BLE_ESP32::dump(p, 20, EQ3Devices[i].addr, 6);
-    p += strlen(p);
-    *(p++) = '\"';
-    *(p++) = ':';
+    TasmotaGlobal.mqtt_data += p;
+    TasmotaGlobal.mqtt_data += "\":";
     sprintf(p, "%d", EQ3Devices[i].RSSI);
-    p += strlen(p);
+    TasmotaGlobal.mqtt_data += p;
     added = 1;
   }
-  *(p++) = '}';
-  *(p++) = '}';
-  *(p++) = 0;
-
-
-//    char *topic = topicPrefix(STAT, pairingaddr, 1);
-//    MqttPublish(topic, false);
+  TasmotaGlobal.mqtt_data += "}}";
 
   MqttPublishPrefixTopic_P(STAT, PSTR("EQ3"), false);
 
@@ -1038,18 +1023,14 @@ int EQ3SendCurrentDevices(){
 
 int EQ3SendResult(char *requested, const char *result){
   // send the active devices
-  char *p = TasmotaGlobal.mqtt_data;
-  int maxlen = sizeof(TasmotaGlobal.mqtt_data);
+  char p[40];
 
   strcpy(p, "{\"result\":\"");
-  p += strlen(p);
+  TasmotaGlobal.mqtt_data += p;
 
   sprintf(p, "%s", result);
-  p += strlen(p);
-  *(p++) = '\"';
-  *(p++) = '}';
-  *(p++) = 0;
-
+  TasmotaGlobal.mqtt_data += p;
+  TasmotaGlobal.mqtt_data += "\"}";
 
   static char stopic[TOPSZ];
   GetTopic_P(stopic, STAT, TasmotaGlobal.mqtt_topic, PSTR(""));
@@ -1701,7 +1682,7 @@ void EQ3DiscoveryOneEQ3(){
   }
 
 #ifdef USE_HOME_ASSISTANT
-  if(Settings.flag.hass_discovery){
+  if(Settings->flag.hass_discovery){
     eq3_device_tag *p;
     do {
       p = &EQ3Devices[EQ3CurrentSingleSlot];
