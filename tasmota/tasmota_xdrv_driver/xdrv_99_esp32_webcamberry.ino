@@ -87,6 +87,15 @@ As soon as the screenshare ended, back to 53fps at 30mhz clock.
  * WcInit         = Init Camera Interface
  * WcRtsp         = Control RTSP Server, 0=disable, 1=enable (forces restart) (if defined ENABLE_RTSPSERVER)
 
+ * WcGetframeN    = read a picture from camera and store in slot N
+ * WcSavepicN     = save a picture 1-4 after WcGetframe or WcSavepic0 to get frame 1 and save. argument is filename
+ * WcAppendpicN   = append a picture 1-4 to a file after WcGetframe or WcSavepic0 to get frame 1 and save. argument is filename
+ * WcGetpistoreN  = read buff, addr, len of a stored image, returns json (e.g. for berry)
+ * WcGetmotionpixels = read addr, len of motion(1) or difference(2) buffer - e.g for berry
+
+ * WcMenuvideoon   = turn on video in main menu
+ * WcMenuvideooff  = turn off video in main menu
+
 ### Enable motion detection interval
 WCsetMotiondetect <timems>
 WCsetMotiondetect 2000
@@ -1893,8 +1902,9 @@ static void WCOperationTask(void *pvParameters){
                     }
                   }
                   uint32_t client_end = millis();
-                  // if it took more than 3s to send to the client, then kill it.
-                  if (client_end - client_start > 4000){
+                  // if it took more than 20s to send to the client, then kill it.
+                  // this was observed on wifi rescan
+                  if (client_end - client_start > 20000){
                     AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: Client timeout on send"));
                     WcStats.clientfail++;
                     client->client.stop();
@@ -1996,7 +2006,7 @@ void WcLoop(void) {
     if (wc_motion.motion_triggered){
 #ifdef USE_BERRY
       char t[40];
-      snprintf(t, (size_t)39, "%d %d", wc_motion.motion_trigger, wc_motion.motion_brightness);
+      snprintf(t, (size_t)39, "%d %d %d", wc_motion.motion_trigger, wc_motion.motion_brightness, wc_motion.changedPixelPertenthousand);
       callBerryEventDispatcher("webcam", "motion", 0, t, strlen(t));
 #endif
       AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: Motion Triggered"));
@@ -2467,6 +2477,24 @@ void CmndWebcamGetMotionPixels(void) {
   Response_P(S_JSON_COMMAND_XVALUE, XdrvMailbox.command, resp);
 }
 
+// todo - get raw pixels from camera.
+// we probably need to specify size/window?
+void CmndWebcamGetCamPixels(void) {
+  // NOTE: the buffers returned here are static unless the frame size or scale changes.
+  // use with care
+  uint8_t *t = nullptr;
+  int len = 0;
+  switch (XdrvMailbox.index){
+    case 1:{ // colour
+    } break;
+    case 2:{ // mono
+    } break;
+  }
+  char resp[50] = "0";
+  snprintf_P(resp, sizeof(resp), PSTR("{\"addr\":%d,\"len\":%d}"), t, len);
+  Response_P(S_JSON_COMMAND_XVALUE, XdrvMailbox.command, resp);
+}
+
 int WebcamSavePic(int append) {
   // returns size
   // use a dummy for buffer ptr
@@ -2529,11 +2557,11 @@ int WebcamSavePic(int append) {
   AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: Failed Save Pic invalid index %d"), XdrvMailbox.payload);
   return 0;
 }
-// "WSSAVEPIC1 /temp.jpg" "WSSAVEPIC2 /temp.jpg"
+// "WCSAVEPIC1 /temp.jpg" "WCSAVEPIC2 /temp.jpg"
 void CmdWebcamSavePic(){
   WebcamSavePic(0)? ResponseCmndDone(): ResponseCmndError();
 }
-// "WSAPPENDPIC1 /temp.jpg" "WSAPPENDPIC2 /temp.jpg"
+// "WCAPPENDPIC1 /temp.jpg" "WCAPPENDPIC2 /temp.jpg"
 void CmdWebcamAppendPic(){
   WebcamSavePic(1)? ResponseCmndDone(): ResponseCmndError();
 }
