@@ -1274,37 +1274,54 @@ void HandleImage(void) {
     format = (int)Wc.picstore[bnum-1].format;
   }
 
-  WiFiClient client = Webserver->client();
   String response = "HTTP/1.1 200 OK\r\n";
-  response += "Content-disposition: inline; filename=cap.jpg\r\n";
+  response += "Content-disposition: inline; filename=cap.";
   if(format == (int)PIXFORMAT_JPEG){
-    response += "Content-type: image/jpeg\r\n\r\n";
+    response += "jpg\r\nContent-type: image/jpeg\r\n";
   } else {
-    response += "Content-type: image/x-tas-binary\r\n\r\n";
+    response += "bin\r\nContent-type: image/x-tas-binary\r\n";
   }
-  Webserver->sendContent(response);
+  response += "Content-Length: ";
+  char tmp[12];
 
   if (!bnum) {
     if (Wc.taskRunning == 1){
       WcWaitZero(&Wc.taskTakePic, 1, 1000);
       TasAutoMutex localmutex(&WebcamMutex, "HandleImage", 200);
       if (Wc.snapshotStore.len) {
+        response += itoa(Wc.snapshotStore.len, tmp, 10);
+        response += "\r\n\r\n";
+
+        WiFiClient client = Webserver->client();
+        Webserver->sendContent(response);
         client.write((char *)Wc.snapshotStore.buff, Wc.snapshotStore.len);
+        client.stop();
         free(Wc.snapshotStore.buff);
         Wc.snapshotStore.len = 0;
+      } else {
+        Webserver->send(404,"",""); 
+        AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: No image #: %d"), bnum);
+        return;
       }
+    } else {
+      Webserver->send(404,"",""); 
+      return;
     }
   } else {
     TasAutoMutex localmutex(&WebcamMutex, "HandleImage", 200);
     bnum--;
     if (!Wc.picstore[bnum].len) {
+      Webserver->send(404,"",""); 
       AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: No image #: %d"), bnum);
-      client.stop();
       return;
     }
+    response += itoa(Wc.picstore[bnum].len, tmp, 10);
+    response += "\r\n\r\n";
+    WiFiClient client = Webserver->client();
+    Webserver->sendContent(response);
     client.write((char *)Wc.picstore[bnum].buff, Wc.picstore[bnum].len);
+    client.stop();
   }
-  client.stop();
 
   AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("CAM: Sending image #: %d"), bnum+1);
 }
