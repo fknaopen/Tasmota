@@ -1195,18 +1195,38 @@ bool WcConvertFrame(int32_t bnum_i, int format, int scale) {
   if ((scale < 0) || scale > 3) return false;
   struct PICSTORE *ps = &Wc.picstore[bnum_i];
   if (!ps->buff) return false;
-  if (ps->format != PIXFORMAT_JPEG) return false;
-  camera_fb_t wc_fb;
-  memset(&wc_fb, 0, sizeof(wc_fb));
-  bool res = convertJpegToPixels(ps->buff, ps->len, ps->width, ps->height, scale, format, &wc_fb);
+  // if jpeg decode
+  bool res = false;
+  if (ps->format == PIXFORMAT_JPEG && format != PIXFORMAT_JPEG) {
+    camera_fb_t wc_fb;
+    memset(&wc_fb, 0, sizeof(wc_fb));
+    res = convertJpegToPixels(ps->buff, ps->len, ps->width, ps->height, scale, format, &wc_fb);
 
-  if (res) {
-    free(ps->buff);
-    ps->buff = wc_fb.buf;
-    ps->len = wc_fb.len;
-    ps->width = (uint16_t)wc_fb.width;
-    ps->height = (uint16_t)wc_fb.height;
-    ps->format = (int8_t)wc_fb.format;
+    if (res) {
+      free(ps->buff);
+      ps->buff = wc_fb.buf;
+      ps->len = wc_fb.len;
+      ps->width = (uint16_t)wc_fb.width;
+      ps->height = (uint16_t)wc_fb.height;
+      ps->format = (int8_t)wc_fb.format;
+    }
+  } else {
+    // must be jpeg encode
+      // we don't support conversion excet to and from jpeg.
+    if (format == PIXFORMAT_JPEG) {
+      struct tag_wc_one_jpeg TempOneJpeg;
+      memset(&TempOneJpeg, 0, sizeof(TempOneJpeg));
+      // will allocate just enough if > 16k required
+      res = WcencodeToJpeg(ps->buff, ps->len, ps->width, ps->height, (int)ps->format, 80, &TempOneJpeg);
+      if (res) {
+        free(ps->buff);
+        ps->buff = TempOneJpeg.fb_buf;
+        ps->len = TempOneJpeg.fb_len;
+        ps->width = (uint16_t)TempOneJpeg.fb_width;
+        ps->height = (uint16_t)TempOneJpeg.fb_height;
+        ps->format = (int8_t)TempOneJpeg.fb_format;
+      }
+    }
   }
   return res;
 }
@@ -1243,10 +1263,25 @@ void HandleImage(void) {
 
   uint32_t bnum = Webserver->arg(F("p")).toInt();
   if ((bnum < 0) || (bnum > MAX_PICSTORE)) { bnum= 1; }
+  int format = (int)PIXFORMAT_JPEG;
+
+  if (bnum){
+    // no picture present at this index
+    if (!Wc.picstore[bnum-1].buff){
+      Webserver->send(404,"",""); 
+      return;
+    } 
+    format = (int)Wc.picstore[bnum-1].format;
+  }
+
   WiFiClient client = Webserver->client();
   String response = "HTTP/1.1 200 OK\r\n";
   response += "Content-disposition: inline; filename=cap.jpg\r\n";
-  response += "Content-type: image/jpeg\r\n\r\n";
+  if(format == (int)PIXFORMAT_JPEG){
+    response += "Content-type: image/jpeg\r\n\r\n";
+  } else {
+    response += "Content-type: image/x-tas-binary\r\n\r\n";
+  }
   Webserver->sendContent(response);
 
   if (!bnum) {
