@@ -348,10 +348,10 @@ void localOV2640Streamer::streamImage(uint32_t curMsec){
 }
 
 typedef struct tag_wc_rtspclient {
-  localOV2640Streamer *camStreamer;
-  CRtspSession *rtsp_session;
+  localOV2640Streamer * volatile camStreamer;
+  CRtspSession * volatile rtsp_session;
   WiFiClient rtsp_client;
-  tag_wc_rtspclient *p_next;
+  tag_wc_rtspclient * volatile p_next;
 } wc_rtspclient;
 #endif //ENABLE_RTSPSERVER
 
@@ -410,7 +410,7 @@ struct {
   // TCP server on port 8554
   WiFiServer *rtspp;
   // pointer to the first rtsp client in a list of multiple clients, or nullptr
-  wc_rtspclient *rtspclient;
+  wc_rtspclient * volatile rtspclient;
   uint8_t rtsp_start;
 #endif // ENABLE_RTSPSERVER
 } Wc;
@@ -1944,7 +1944,7 @@ static void WCOperationTask(void *pvParameters){
     { // closure for auto mutex
       // note that this mutex can block the loop for a long time - 
       // e.g. if motion detect on a full big frame, up to a second
-      TasAutoMutex localmutex(&WebcamMutex, "WebcamMjpeg", 2000);
+      TasAutoMutex localmutex(&WebcamMutex, "WebcamMjpeg", 30000);
 
       // only do anything if cam us up, and cam has not remained stopped
       if (Wc.up && !Wc.disable_cam) {
@@ -2220,12 +2220,14 @@ static void WCOperationTask(void *pvParameters){
 
     #ifdef ENABLE_RTSPSERVER
                 // if rtsp is active, we will have one or more clients
-                wc_rtspclient *rtspclient = Wc.rtspclient;
+                volatile wc_rtspclient *rtspclient = Wc.rtspclient;
                 uint8_t rtspclientcount = 0;
                 while (rtspclient) {
-                  rtspclient->camStreamer->setframe(_jpg_buf, _jpg_buf_len);
-                  rtspclient->rtsp_session->broadcastCurrentFrame(now);
-                  rtspclient->camStreamer->clearframe();
+                  if (rtspclient->camStreamer && rtspclient->rtsp_session){
+                    rtspclient->camStreamer->setframe(_jpg_buf, _jpg_buf_len);
+                    rtspclient->rtsp_session->broadcastCurrentFrame(now);
+                    rtspclient->camStreamer->clearframe();
+                  }
                   rtspclient = rtspclient->p_next;
                   rtspclientcount++;
                 }
@@ -2345,16 +2347,18 @@ void WcLoop(void) {
   if (Settings->webcam_config.rtsp){
     if (!TasmotaGlobal.global_state.wifi_down) {
       // pretty sure we don;t need the mutex here
-      //TasAutoMutex localmutex(&WebcamMutex, "WcLoop2", 200);
+      TasAutoMutex localmutex(&WebcamMutex, "WcLoop2", 30000);
       if (!Wc.rtspp) {
         Wc.rtspp = new WiFiServer(8554);
         Wc.rtspp->begin();
         AddLog(LOG_LEVEL_INFO, PSTR("CAM: RTSP init"));
       }
 
-      wc_rtspclient *rtspclient = Wc.rtspclient;
-      wc_rtspclient **prev = &Wc.rtspclient;
+      wc_rtspclient * volatile rtspclient = Wc.rtspclient;
+      wc_rtspclient * volatile *  prev = &Wc.rtspclient;
+      uint8_t rtspclientcount = 0;
       while (rtspclient) {
+        bool removed = false;
         if (rtspclient->rtsp_session){
           rtspclient->rtsp_session->handleRequests(0);
           // if a client has stopped, remove it.
@@ -2363,19 +2367,22 @@ void WcLoop(void) {
             rtspclient->rtsp_session = nullptr;
             delete rtspclient->camStreamer;
             rtspclient->camStreamer = nullptr;
-            rtspclient->rtsp_client.stop();
+            //rtspclient->rtsp_client.stop();
             *prev = rtspclient->p_next;
             wc_rtspclient *next = rtspclient->p_next;
             delete rtspclient;
             rtspclient = next;
             AddLog(LOG_LEVEL_INFO, PSTR("CAM: RTSP stopped"));
-          } else {
-            rtspclient = rtspclient->p_next;
+            removed = true;
           }
-        } else {
+        }
+        if (!removed){
+          rtspclientcount++;
+          prev = &rtspclient->p_next;
           rtspclient = rtspclient->p_next;
         }
       }
+      WcStats.rtspclientcount = rtspclientcount;
 
       // accept new rtsp clients
       WiFiClient rtsp_client = Wc.rtspp->accept();
@@ -2387,6 +2394,7 @@ void WcLoop(void) {
         client->rtsp_session = new CRtspSession(&client->rtsp_client, client->camStreamer); // our threads RTSP session and state
         AddLog(LOG_LEVEL_INFO, PSTR("CAM: RTSP stream created"));
         Wc.rtspclient = client;
+        WcStats.rtspclientcount++;
       }
     } else {
       // rtsp not enabled
@@ -2406,20 +2414,21 @@ void WcLoop(void) {
 void WcEndRTSP(){
   // we should use a mutext here, in case we are currently sending
   TasAutoMutex localmutex(&WebcamMutex, "WcEndRTSP", 2000);
-  wc_rtspclient *rtspclient = Wc.rtspclient;
-  wc_rtspclient **prev = &Wc.rtspclient;
+  wc_rtspclient * volatile rtspclient = Wc.rtspclient;
+  wc_rtspclient * volatile * prev = &Wc.rtspclient;
   while (rtspclient) {
     delete rtspclient->rtsp_session;
     rtspclient->rtsp_session = nullptr;
     delete rtspclient->camStreamer;
     rtspclient->camStreamer = nullptr;
-    rtspclient->rtsp_client.stop();
-    *prev = rtspclient->p_next;
+    //rtspclient->rtsp_client.stop();
     wc_rtspclient *next = rtspclient->p_next;
     delete rtspclient;
     rtspclient = next;
     AddLog(LOG_LEVEL_INFO, PSTR("CAM: RTSP stopped"));
   }
+  Wc.rtspclient = nullptr;
+  WcStats.rtspclientcount = 0;
 }
 
 // kill all http streaming clients
