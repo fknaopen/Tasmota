@@ -270,6 +270,7 @@ SemaphoreHandle_t WebcamMutex = nullptr;
 // these are the frame intervals at 20mhz
 // empirically, they directly scale with frequency.
 // for 30mhz, 50fps -> 75fps; for 15 mhz, 37.5fps, 
+// Q: what happens at 30 mains?
 const int nativeIntervals20ms[] = {
     20, //0 = FRAMESIZE_96X96,    // 96x96 (50fps, ~48fps) - at wcclock=30 (75, ~53)
     20, //1 = FRAMESIZE_QQVGA,    // 160x120 (50fps ~47fps)
@@ -1070,6 +1071,11 @@ struct WC_Motion {
 
   uint8_t pixelThreshold;
   uint8_t pixel_trigger_limit; // pertenthousand changed pixels
+
+  uint32_t auto_mask; // number of motion runs to run automask over
+  uint8_t auto_mask_pixel_threshold; // pixel change threshold to add pixel to mask
+  uint8_t auto_mask_pixel_expansion; // number of pixels atound the detected pixel to set in mask (square)
+
   ////////////////////////////////////
   // variables used in detection
 
@@ -1079,12 +1085,19 @@ struct WC_Motion {
   uint32_t motion_ltime;  // time of last detect
   uint32_t motion_trigger; // last amount of difference measured (~100 for none, > ~1000 for motion?)
   uint32_t motion_brightness; // last frame brightness read (~15000)
+
   uint8_t *last_motion_buffer;      // last monochrome buffer
   uint32_t last_motion_buffer_len; 
+
   uint8_t *diff_buffer; // mono absolute buffer
   uint32_t diff_buffer_len; // 
+
   uint8_t *frame_buffer; // full size colour buffer
   uint32_t frame_buffer_len; // actual frame buffer len if allocated
+
+  uint8_t *mask_buffer; // monochrome 8 bit mask - manually created, only (x,y) where pixels are < 20 are tested for motion
+  uint32_t mask_buffer_len; // monochrome 8 bit mask buffer len if allocated
+  
   int scaledwidth;
   int scaledheight;
   uint32_t changedPixelPertenthousand;
@@ -1372,6 +1385,11 @@ void HandleImagemotion(uint8_t *src, uint8_t len, int width, int height){
   return;
 }
 
+void HandleImagemotionmask(){
+  int width = wc_motion.scaledwidth;
+  int height = wc_motion.scaledheight;
+  HandleImagemotion(wc_motion.mask_buffer, wc_motion.mask_buffer_len, width, height);
+}
 void HandleImagemotiondiff(){
   int width = wc_motion.scaledwidth;
   int height = wc_motion.scaledheight;
@@ -1502,6 +1520,7 @@ unsigned int wc_jpg_read(void * arg, size_t index, uint8_t *buf, size_t len)
 // output buffer and image width
 // this is to write macroblocks to the output.
 // x,y,w,h are the jpeg numbers
+// we ASSUME that the data presented to us is RGB888 - even for decode of a mono jpeg?
 static bool _mono_write(void * arg, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t *data)
 {
     wc_rgb_jpg_decoder * jpeg = (wc_rgb_jpg_decoder *)arg;
@@ -1674,6 +1693,48 @@ bool convertJpegToPixels(const uint8_t *src_buf, size_t src_len, int width, int 
 
 
 /*********************************************************************************************/
+// auto populate mask from diff image
+void WcAutoMask(){
+  //uint32_t auto_mask; // number of mootion detects to run automask over
+  //uint8_t auto_mask_pixel_threshold; // pixel change threshold to add pixel to mask
+  //uint8_t auto_mask_pixel_expansion; // number of pixels atound the detected pixel to set in mask (square)
+  int width = Wc.width/(1<<wc_motion.scale);
+  int height = Wc.height/(1<<wc_motion.scale);
+  int swscalex = (1<<wc_motion.swscale);
+  int scaledwidth = width/swscalex;
+  int swscaley = (1<<wc_motion.swscale);
+  int scaledheight = height/swscaley;
+
+  if (!wc_motion.diff_buffer || !wc_motion.mask_buffer) return;
+
+  uint8_t *pxdy = wc_motion.diff_buffer;
+  uint8_t *pxmy = wc_motion.mask_buffer;
+  uint8_t thresh = wc_motion.auto_mask_pixel_threshold;
+  int expansion = wc_motion.auto_mask_pixel_expansion;
+  int stride = scaledwidth;
+  for (int y = 0; y < scaledheight; y++){
+    uint8_t *pxd = pxdy + y*stride;
+    for (int x = 0; x < scaledwidth; x++){
+      uint8_t diff = *(pxd++);
+      if (diff > thresh){
+        for (int ym = y-expansion; ym < y + expansion; ym++){
+          if (ym < 0) continue;
+          if (ym >= scaledheight) break;
+          for (int xm = x-expansion; xm < x + expansion; xm++){
+            if (xm < 0) continue;
+            if (xm >= scaledwidth) break;
+            uint8_t *pxm = pxmy + ym*stride + xm;
+            *pxm = 255;
+          }
+        }
+      }
+    }
+  }
+
+}
+
+
+/*********************************************************************************************/
 // motion detect routine.
 // Wc.width and Wc.height must be set
 // buffer is passed in
@@ -1702,6 +1763,13 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
       (!wc_motion.enable_diffbuff && wc_motion.diff_buffer) ||
       (wc_motion.required_motion_buffer_len != last_motion_buffer_len)){
     newbuffers = true;
+  }
+  if (wc_motion.mask_buffer && wc_motion.mask_buffer_len != last_motion_buffer_len){
+    AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: freeing mask buffer: len mismatch - %d != %d"), wc_motion.mask_buffer_len, last_motion_buffer_len);
+    // if the mask buffer is the wrong size, just free it with error
+    free(wc_motion.mask_buffer);
+    wc_motion.mask_buffer = nullptr;
+    wc_motion.mask_buffer_len = 0;
   } 
 
   // detect change in scale and swscale as well as frame size in
@@ -1764,6 +1832,12 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
     return;
   }
 
+  // enable us to call with null just to allocate buffers
+  if (!_jpg_buf){
+    // indicate failure
+    return;
+  }
+
   uint32_t start = millis();
 
   // both buffers are valid if we get here
@@ -1783,6 +1857,8 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
   uint32_t x, y;
   uint8_t *pxiy = wc_motion.frame_buffer;
   uint8_t *pxry = wc_motion.last_motion_buffer;
+
+  // difference buffer - may be nullptr unless enabled
   uint8_t *pxdy = wc_motion.diff_buffer;
   // convert to bw
 
@@ -1793,25 +1869,41 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
   uint32_t bright = 0;
   uint8_t thresh = wc_motion.pixelThreshold;
   uint32_t changedPixelCount = 0;
+
+  // mask buffer - may be nullptr unless specifically set
+  uint8_t *pxmy = wc_motion.mask_buffer;
+
   // for unscaled, a simple loop over total length, maybe marginally faster
   if (wc_motion.frame_buffer_len == wc_motion.last_motion_buffer_len){
     uint8_t *pxi = pxiy;
     uint8_t *pxr = pxry;
     uint8_t *pxd = pxdy; // may be nullptr;
+    uint8_t *pxm = pxmy; // may be nullptr;
     for (int i = 0; i < wc_motion.frame_buffer_len; i++){
+      // if we have a mask, and the mask pixel value > 20, then ignore this pixel
       uint8_t gray = *pxi;
-      uint8_t diff = abs((int)(*pxi) - (int)(*pxr));
-      *(pxr++) = gray;
-      pxi++;
-      // store difference image
-      if (pxd) *pxd = diff;
-      // look at pixel threshold if configured
-      if (thresh && diff > thresh){
-        changedPixelCount++;
-        if (pxd) *pxd = 255;
+      if (pxm && (*pxm > 20)) {
+        pxi++;
+        pxr++;
+        pxm++;
+        if (pxd) {
+          *(pxd++) = 0; // clear diff
+        }
+      } else {
+        uint8_t diff = abs((int)(*pxi) - (int)(*pxr));
+        *(pxr++) = gray;
+        pxi++;
+        // store difference image
+        if (pxd) *pxd = diff;
+        // look at pixel threshold if configured
+        if (thresh && diff > thresh){
+          changedPixelCount++;
+          if (pxd) *pxd = 255;
+        }
+        if (pxd) pxd++;
+        if (pxm) pxm++;
+        accu += diff;
       }
-      if (pxd) pxd++;
-      accu += diff;
       bright += gray;
     }
   } else {
@@ -1827,25 +1919,36 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
       uint8_t *pxi = pxiy + y*stride;
       uint8_t *pxr = pxry + y*scaledwidth;
       uint8_t *pxd = nullptr;
+      uint8_t *pxm = nullptr;
       if (pxdy) pxd = pxdy + y*scaledwidth;
+      if (pxmy) pxm = pxmy + y*scaledwidth;
       for (x = 0; x < scaledwidth;x ++) {
         int32_t gray = *pxi;
-        int32_t lgray = *pxr;
-        *pxr = gray;
-        pxi += xincrement;
-        pxr++;
-        uint8_t diff = abs(gray - lgray);
+        if (pxm && (*pxm > 20)) {
+          pxi += xincrement;
+          pxr++;
+          pxm++;
+          if (pxd) {
+            *(pxd++) = 0; // clear diff
+          }
+        } else {
+          int32_t lgray = *pxr;
+          *pxr = gray;
+          pxi += xincrement;
+          pxr++;
+          uint8_t diff = abs(gray - lgray);
 
-        // store difference image
-        if (pxd) *pxd = diff;
-        // look at pixel threshold if configured
-        if (thresh && diff > thresh){
-          changedPixelCount++;
-          if (pxd) *pxd = 255;
+          // store difference image
+          if (pxd) *pxd = diff;
+          // look at pixel threshold if configured
+          if (thresh && diff > thresh){
+            changedPixelCount++;
+            if (pxd) *pxd = 255;
+          }
+          if (pxd) pxd++;
+          if (pxm) pxm++;
+          accu += diff;
         }
-        if (pxd) pxd++;
-
-        accu += diff;
         bright += gray;
       }
     }
@@ -1875,6 +1978,12 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
 
   // trigger Berry calling webcam.motion if it exists
   wc_motion.motion_processed = 1;
+
+  if (wc_motion.auto_mask > 0){
+    WcAutoMask();
+    wc_motion.auto_mask--;
+    AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: motion: auto_mask %d"), wc_motion.auto_mask);
+  }
   uint32_t end = millis();
 
   wc_motion.last_duration = end - start;
@@ -2460,6 +2569,7 @@ void WcPicSetup(void) {
   WebServer_on(PSTR("/wc.mjpeg"), HandleImage);
   WebServer_on(PSTR("/snapshot.jpg"), HandleImage);
   WebServer_on(PSTR("/motiondiff.jpg"), HandleImagemotiondiff);
+  WebServer_on(PSTR("/motionmask.jpg"), HandleImagemotionmask);
   WebServer_on(PSTR("/motionbuff.jpg"), HandleImagemotionbuff);
   WebServer_on(PSTR("/motionlbuff.jpg"), HandleImagemotionlbuff);
 }
@@ -2763,6 +2873,70 @@ void CmndWebcamSetMotionDetect(void) {
       }
       res = wc_motion.motion_trigger_limit;
       break;
+    case 8:{ // set mask feature.  must be done AFTER setting resolution or scale...
+      int auto_mask_count = 1;
+      int auto_mask_pixel_threshold = 10;
+      int auto_mask_pixel_expansion = 4;
+
+      if (0 == XdrvMailbox.data_len) {
+        res = wc_motion.mask_buffer? 1:0;
+        break;
+      } else {
+        char tmp[40];
+        strncpy(tmp, XdrvMailbox.data, 10);
+        char *p = tmp;
+        char *arg = strtok(tmp, " ");
+        auto_mask_count = atoi(arg);
+        arg = strtok(nullptr, " ");
+        if (arg){
+          auto_mask_pixel_threshold = atoi(arg);
+          arg = strtok(nullptr, " ");
+          if (arg){
+            auto_mask_pixel_expansion = atoi(arg);
+          }
+        }
+      }
+
+      if (!auto_mask_count){
+        if (wc_motion.mask_buffer){  
+          TasAutoMutex localmutex(&WebcamMutex, "setMotionDetect", 30000);
+          free(wc_motion.mask_buffer);
+          wc_motion.mask_buffer_len = 0;
+        }
+        res = 0;
+        break;
+      }
+      if (wc_motion.mask_buffer){
+        memset(wc_motion.mask_buffer, 0, wc_motion.mask_buffer_len);
+      } else {
+        TasAutoMutex localmutex(&WebcamMutex, "setMotionDetect", 30000);
+        // force buffer allocation/length calc
+        if (auto_mask_count > 1){
+          wc_motion.enable_diffbuff = 1; // enable the diff buff, we use if for automask
+        }
+        WcDetectMotionFn(nullptr, 0);
+        if (wc_motion.last_motion_buffer_len){
+          wc_motion.mask_buffer = (uint8_t *)heap_caps_aligned_alloc(4, wc_motion.last_motion_buffer_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+          if (wc_motion.mask_buffer){
+            wc_motion.mask_buffer_len = wc_motion.last_motion_buffer_len;
+            AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: motion: new mask buffer of %d"), wc_motion.mask_buffer_len);
+          }
+        }
+      }
+      if (wc_motion.mask_buffer){
+        memset(wc_motion.mask_buffer, 0, wc_motion.mask_buffer_len);
+        if (XdrvMailbox.payload > 1){
+          // if 2+, then represents count of motion detects to make mask from
+          wc_motion.auto_mask = auto_mask_count; 
+          wc_motion.auto_mask_pixel_threshold = auto_mask_pixel_threshold;
+          wc_motion.auto_mask_pixel_expansion = auto_mask_pixel_expansion;
+        }
+        res = auto_mask_count;
+      } else {
+        AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: unable to allocate mask buffer of %d"), wc_motion.last_motion_buffer_len);
+        res = 0;
+      }
+    } break;
   }
   ResponseCmndNumber(res);
 }
@@ -2815,6 +2989,13 @@ void CmndWebcamGetPicStore(void) {
 void CmndWebcamGetMotionPixels(void) {
   // NOTE: the buffers returned here are static unless the frame size or scale changes.
   // use with care
+  int width = Wc.width/(1<<wc_motion.scale);
+  int height = Wc.height/(1<<wc_motion.scale);
+  int swscalex = (1<<wc_motion.swscale);
+  int scaledwidth = width/swscalex;
+  int swscaley = (1<<wc_motion.swscale);
+  int scaledheight = height/swscaley;
+
   uint8_t *t = nullptr;
   int len = 0;
   switch (XdrvMailbox.index){
@@ -2822,13 +3003,20 @@ void CmndWebcamGetMotionPixels(void) {
       t = wc_motion.last_motion_buffer;
       len = wc_motion.last_motion_buffer_len;
     } break;
-    case 2:{
+    case 2:{ // optional diff buffer
       t = wc_motion.diff_buffer;
       len = wc_motion.diff_buffer_len;
     } break;
+    case 3:{ // optional mask buffer
+      t = wc_motion.mask_buffer;
+      len = wc_motion.mask_buffer_len;
+    } break;
   }
   char resp[50] = "0";
-  snprintf_P(resp, sizeof(resp), PSTR("{\"addr\":%d,\"len\":%d}"), t, len);
+  snprintf_P(resp, sizeof(resp), PSTR("{\"addr\":%d,\"len\":%d,\"w\":%d,\"h\":%d}"), 
+    t, len,
+    scaledwidth, scaledheight
+    );
   Response_P(S_JSON_COMMAND_XVALUE, XdrvMailbox.command, resp);
 }
 
