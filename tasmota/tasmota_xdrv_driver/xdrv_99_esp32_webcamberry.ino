@@ -419,6 +419,7 @@ struct {
 struct {
   uint32_t camcnt = 0;
   uint32_t camfps = 0;
+  uint32_t maxfps = 0;
   uint32_t camfail = 0;
   uint32_t jpegfail = 0;
   uint32_t clientfail = 0;
@@ -724,6 +725,33 @@ void WcSetDefaults(uint32_t upgrade) {
   if (Wc.up) { WcApplySettings(); }
 }
 
+// deinit and power down camera
+void WcCamOff() {
+  TasAutoMutex localmutex(&WebcamMutex, "WcCamOff", 30000);
+  // deinit camera
+  WcSetup(-1);
+  // kill any existing clients
+  WcEndStream();
+  // kill any existing rtsp clients
+  WcEndRTSP();
+
+  gpio_num_t pin_pwdn;
+  if (PinUsed(GPIO_WEBCAM_PWDN)){
+    pin_pwdn = (gpio_num_t)Pin(GPIO_WEBCAM_PWDN);
+  } else {
+    pin_pwdn = (gpio_num_t)Pin(PWDN_GPIO_NUM);
+  }
+  gpio_config_t conf = { 0 };
+  conf.pin_bit_mask = 1LL << pin_pwdn;
+  conf.mode = GPIO_MODE_OUTPUT;
+  gpio_config(&conf);
+
+  // carefull, logic is inverted compared to reset pin
+  gpio_set_level(pin_pwdn, 1);
+  vTaskDelay(10 / portTICK_PERIOD_MS);
+  Wc.lastCamError = 0x3;
+}
+
 uint32_t WcSetup(int32_t fsiz) {
   // we must stall until re-enabled
   WcWaitEnable();
@@ -803,7 +831,34 @@ uint32_t WcSetup(int32_t fsiz) {
     // no valid config found -> abort
     AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: No pin config"));
     return 0;
-}
+  }
+
+  // always power cycle the camera
+  // this adds 400ms to start delay, but is worth it to solve random 0x105
+  if (config.pin_pwdn){
+    // this is only done in driver first init
+    // so first run, we should configure as they do.
+    gpio_config_t conf = { 0 };
+    conf.pin_bit_mask = 1LL << config.pin_pwdn;
+    conf.mode = GPIO_MODE_OUTPUT;
+    gpio_config(&conf);
+
+    int power_delay = 50;
+    // if currently powered
+    if (!gpio_get_level((gpio_num_t)config.pin_pwdn)){
+      // power off for 200ms
+      gpio_set_level((gpio_num_t)config.pin_pwdn, 1);
+      vTaskDelay(power_delay / portTICK_PERIOD_MS);
+    }
+
+    // if camera currently powered off, power it up and wait for 200ms
+    // this is a trial to see if it reduces 0x105
+    // - and it solves the 0x105 issue!!!
+    if (gpio_get_level((gpio_num_t)config.pin_pwdn)){
+      gpio_set_level((gpio_num_t)config.pin_pwdn, 0);
+      vTaskDelay(power_delay / portTICK_PERIOD_MS);
+    }
+  }
 
   int32_t ledc_channel = analogAttach(config.pin_xclk);
   if (ledc_channel < 0) {
@@ -897,7 +952,9 @@ uint32_t WcSetup(int32_t fsiz) {
   if (psram) { Wc.up = 2; }
 
   Wc.frameIntervalsus = (uint32_t)(((float)nativeIntervals20ms[fsiz]/((float)Settings->webcam_clk/20.0))*1000.0);
+  WcStats.maxfps = (uint32_t)((float)1000000.0/(float)Wc.frameIntervalsus);
 
+  Wc.lastCamError = ESP_OK;
   return Wc.up;
 }
 
@@ -917,7 +974,9 @@ int32_t WcSetOptions(uint32_t sel, int32_t value) {
     case 25:
       // pixelformat - native formats + 1, 0->jpeg
       if (value >= 0) { Wc.camPixelFormat = value; }
-      WcSetup(Settings->webcam_config.resolution);
+      if (Wc.up){
+        WcSetup(Settings->webcam_config.resolution);
+      }
       return value;
       break;
   }
@@ -1451,7 +1510,7 @@ uint32_t WcSetStreamserver(uint32_t flag) {
 
   if (flag) {
     if (!Wc.CamServer) {
-      TasAutoMutex localmutex(&WebcamMutex, "HandleWebcamMjpeg", 200);
+      TasAutoMutex localmutex(&WebcamMutex, "HandleWebcamMjpeg", 20000);
       Wc.CamServer = new ESP8266WebServer(81);
       Wc.CamServer->on("/", HandleWebcamRoot);
       Wc.CamServer->on("/diff.mjpeg", HandleWebcamMjpegDiff);
@@ -1463,7 +1522,7 @@ uint32_t WcSetStreamserver(uint32_t flag) {
     }
   } else {
     if (Wc.CamServer) {
-      TasAutoMutex localmutex(&WebcamMutex, "HandleWebcamMjpeg", 200);
+      TasAutoMutex localmutex(&WebcamMutex, "HandleWebcamMjpeg", 20000);
       WcEndStream();
       Wc.CamServer->stop();
       delete Wc.CamServer;
@@ -1472,13 +1531,6 @@ uint32_t WcSetStreamserver(uint32_t flag) {
     }
   }
   return 0;
-}
-
-void WcInterruptControl() {
-  WcSetStreamserver(Settings->webcam_config.stream);
-  if(Wc.up == 0) {
-    WcSetup(Settings->webcam_config.resolution);
-  }
 }
 
 void WcMotionLog(){
@@ -1884,7 +1936,7 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
       uint8_t gray = *pxi;
       if (pxm && (*pxm > 20)) {
         pxi++;
-        pxr++;
+        *(pxr++) = gray; // set background regardless
         pxm++;
         if (pxd) {
           *(pxd++) = 0; // clear diff
@@ -1926,17 +1978,16 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
         int32_t gray = *pxi;
         if (pxm && (*pxm > 20)) {
           pxi += xincrement;
-          pxr++;
+          *(pxr++) = gray;
           pxm++;
           if (pxd) {
             *(pxd++) = 0; // clear diff
           }
         } else {
           int32_t lgray = *pxr;
-          *pxr = gray;
-          pxi += xincrement;
-          pxr++;
           uint8_t diff = abs(gray - lgray);
+          *(pxr++) = gray;
+          pxi += xincrement;
 
           // store difference image
           if (pxd) *pxd = diff;
@@ -2543,7 +2594,7 @@ void WcEndRTSP(){
 // kill all http streaming clients
 void WcEndStream(){
   // we should use a mutext here, in case we are currently sending
-  TasAutoMutex localmutex(&WebcamMutex, "WcLoop2", 2000);
+  TasAutoMutex localmutex(&WebcamMutex, "WcLoop2", 20000);
   // if http streaming is active
   wc_client *client = Wc.client_p;
   // iterate over clients
@@ -2555,12 +2606,6 @@ void WcEndStream(){
     client = client->p_next;
   }
   WcRemoveDeadCients();
-
-  if (Wc.CamServer){
-    Wc.CamServer->stop();
-    delete Wc.CamServer;
-    Wc.CamServer = NULL;
-  }
 }
 
 
@@ -2575,25 +2620,27 @@ void WcPicSetup(void) {
 }
 
 
-const char HTTP_WEBCAM_MENUVIDEOCONTROL[] PROGMEM = "<p></p><button onclick=\"fetch('/cs?c2=64&c1=wcmenuvideo%s').then(()=>{location.reload();});\" name>MenuVideo%s - Toggle</button>";
+const char HTTP_WEBCAM_MENUVIDEOCONTROL[] PROGMEM = "<p></p><button onclick=\"fetch('/cs?c2=64&c1=%s').then(()=>{location.reload();});\" name>%s</button>";
 
 void WcShowStream(void) {
   // if streaming is enabled (1 or 2), start stream server
   if (Settings->webcam_config.stream) {
 //    if (!Wc.CamServer || !Wc.up) {
     if (!Wc.CamServer) {
-      WcInterruptControl();
+      WcSetStreamserver(Settings->webcam_config.stream);
     }
   }
 
   if (!Wc.CamServer){
-    WSContentSend_P(PSTR("<p></p><center>Cam Server Not Running - refresh or use 'WCStream 1'</center><p></p>"));
+    WSContentSend_P(PSTR("<p></p><center>Cam Server Not Running'</center><p></p>"));
+    WSContentSend_P(HTTP_WEBCAM_MENUVIDEOCONTROL, "wcstream2", "Turn On Streaming");
   } else {
     if (!Wc.up){
       WSContentSend_P(PSTR("<p></p><center>Cam Not Running Err 0x%x</center><p></p>"), Wc.lastCamError);
+      WSContentSend_P(HTTP_WEBCAM_MENUVIDEOCONTROL, "wcinit", "Try WCINIT");
     } else {
       if (Settings->webcam_config.spare15) {
-        WSContentSend_P(HTTP_WEBCAM_MENUVIDEOCONTROL, "on", "Off");
+        WSContentSend_P(HTTP_WEBCAM_MENUVIDEOCONTROL, "wcmenuvideoon", "Turn On Video");
       }
     }
   }
@@ -2602,7 +2649,7 @@ void WcShowStream(void) {
   if (!Settings->webcam_config.spare15 && Settings->webcam_config.stream && Wc.CamServer && Wc.up!=0) {
     // Give the webcam webserver some time to prepare the stream - catch error in JS
     WSContentSend_P(PSTR("<p></p><center><img onerror='setTimeout(()=>{this.src=this.src;},1000)' src='http://%_I:81/stream' alt='Webcam stream' style='width:99%%;'></center><p></p>"),(uint32_t)WiFi.localIP());
-    WSContentSend_P(HTTP_WEBCAM_MENUVIDEOCONTROL, "off", "On");
+    WSContentSend_P(HTTP_WEBCAM_MENUVIDEOCONTROL, "wcmenuvideooff", "Turn Off Video");
   }
 }
 
@@ -2694,6 +2741,7 @@ void WcInit(void) {
 #define D_CMND_WC_SETOPTIONS "SetOptions"
 #define D_CMND_WC_CONVERTFRAME "ConvertFrame"
 
+#define D_CMND_WC_POWEROFF "Poweroff"
 
 const char kWCCommands[] PROGMEM =  D_PRFX_WEBCAM "|"  // Prefix
   "|" D_CMND_WC_STREAM "|" D_CMND_WC_RESOLUTION "|" D_CMND_WC_MIRROR "|" D_CMND_WC_FLIP "|"
@@ -2706,9 +2754,7 @@ const char kWCCommands[] PROGMEM =  D_PRFX_WEBCAM "|"  // Prefix
   D_CMND_WC_STARTTASK "|" D_CMND_WC_STOPTASK "|" D_CMND_WC_MENUVIDEOOFF "|" D_CMND_WC_MENUVIDEOON "|" 
   D_CMND_WC_INTERRUPT "|" D_CMND_WC_SETMOTIONDETECT "|" D_CMND_WC_GETFRAME "|" D_CMND_WC_GETPICSTORE "|" 
   D_CMND_WC_BERRYFRAMES  "|" D_CMND_WC_SAVEPIC "|" D_CMND_WC_APPENDPIC  "|" D_CMND_WC_GETMOTIONPIXELS "|"
-  D_CMND_WC_SETOPTIONS "|" D_CMND_WC_CONVERTFRAME
-
-  
+  D_CMND_WC_SETOPTIONS "|" D_CMND_WC_CONVERTFRAME "|" D_CMND_WC_POWEROFF
 
 #ifdef ENABLE_RTSPSERVER
   "|" D_CMND_RTSP
@@ -2728,8 +2774,8 @@ void (* const WCCommand[])(void) PROGMEM = {
   &CmndWebcamBerryFrames,
   &CmdWebcamSavePic, &CmdWebcamAppendPic,
   &CmndWebcamGetMotionPixels, &CmndWebcamSetOptions,
-  &CmndWebcamConvertFrame
-
+  &CmndWebcamConvertFrame,
+  &CmndWebcamPowerOff
 
 #ifdef ENABLE_RTSPSERVER
   , &CmndWebRtsp
@@ -2776,6 +2822,11 @@ void CmndWebcamBerryFrames(void) {
   ResponseCmndStateText(Wc.berryFrames);
 }
 
+void CmndWebcamPowerOff(void){
+  WcCamOff();
+  ResponseCmndDone();
+}
+
 void CmndWebcamSetOptions(void){
   int res = WcSetOptions(XdrvMailbox.index, XdrvMailbox.payload);
   ResponseCmndNumber(res);
@@ -2815,7 +2866,7 @@ void CmndWebcamStartTask(void) {
 void CmndWebcamStopTask(void) {
   if (Wc.taskRunning == 1){
     // set to 2, and wait until cleared
-    WcWaitZero(&Wc.taskRunning, 2, 1000);
+    WcWaitZero(&Wc.taskRunning, 2, 20000);
   }
   ResponseCmndDone();
 }
@@ -3122,7 +3173,13 @@ void CmndWebcamMenuVideoOn(void) {
 void CmndWebcamStream(void) {
   if ((XdrvMailbox.payload >= 0) && (XdrvMailbox.payload <= 1)) {
     Settings->webcam_config.stream = XdrvMailbox.payload;
-    if (!Settings->webcam_config.stream) { WcInterruptControl(); }  // Stop stream
+    WcSetStreamserver(Settings->webcam_config.stream);
+  } else {
+    // we use this from a menu
+    if (XdrvMailbox.index == 2){
+      Settings->webcam_config.stream = 1;
+      WcSetStreamserver(Settings->webcam_config.stream);
+    }
   }
   ResponseCmndStateText(Settings->webcam_config.stream);
 }
@@ -3347,7 +3404,7 @@ void CmndWebcamCamStartStop(void){
 
 void CmndWebcamInit(void) {
   WcSetup(Settings->webcam_config.resolution);
-  WcInterruptControl();
+  WcSetStreamserver(Settings->webcam_config.stream);
   ResponseCmndDone();
 }
 
@@ -3410,11 +3467,24 @@ void WcUpdateStats(void) {
   WcStats.camcnt = 0;
 }
 
-const char HTTP_WEBCAM_FPS[] PROGMEM = "{s}%s " D_FRAME_RATE "{m}%d " D_UNIT_FPS  "{e}";
+#ifndef D_WEBCAM_STATE
+#define D_WEBCAM_STATE "State"
+#define D_WEBCAM_POWEREDOFF "PowerOff"
+#define D_WEBCAM_FRAMEFAIL "Frame Failed"
+#define D_WEBCAM_HWFAIL "H/W fail"
+#endif
+
+const char HTTP_WEBCAM_FPS[] PROGMEM = "{s}%s " D_FRAME_RATE "{m}%d/%d " D_UNIT_FPS  "{e}";
+const char HTTP_WEBCAM_STATE[] PROGMEM = "{s}%s" D_WEBCAM_STATE "{m}%s - %X{e}";
 
 void WcStatsShow(void) {
 #ifdef USE_WEBSERVER
-  WSContentSend_PD(HTTP_WEBCAM_FPS, WcStats.name, WcStats.camfps);
+  switch(Wc.lastCamError){
+    case ESP_OK: WSContentSend_PD(HTTP_WEBCAM_FPS, WcStats.name, WcStats.camfps, WcStats.maxfps); break;
+    case 2: WSContentSend_PD(HTTP_WEBCAM_STATE, WcStats.name, D_WEBCAM_FRAMEFAIL, Wc.lastCamError); break;
+    case 3: WSContentSend_PD(HTTP_WEBCAM_STATE, WcStats.name, D_WEBCAM_POWEREDOFF, Wc.lastCamError); break;
+    default:  WSContentSend_PD(HTTP_WEBCAM_STATE, WcStats.name, D_WEBCAM_HWFAIL, Wc.lastCamError); break;
+  }
 #endif  // USE_WEBSERVER
 }
 
@@ -3437,9 +3507,10 @@ bool Xdrv99(uint32_t function) {
       break;
     case FUNC_WEB_ADD_MAIN_BUTTON:
       WcShowStream();
-     break;
+      break;
     case FUNC_EVERY_SECOND:
       WcUpdateStats();
+      break;
     case FUNC_WEB_SENSOR:
       WcStatsShow();
       break;
@@ -3452,26 +3523,25 @@ bool Xdrv99(uint32_t function) {
       break;
     case FUNC_INIT:
       // starts stream server if configured, and configured camera 
-      WcInterruptControl();
+      WcSetup(Settings->webcam_config.resolution);
+      WcSetStreamserver(Settings->webcam_config.stream);
       WCStartOperationTask();
       break;
     case FUNC_SAVE_BEFORE_RESTART: {
       // stop cam clock
       AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: FUNC_SAVE_BEFORE_RESTART"));
       // turn off camera
-      WcInterrupt(0);
       CmndWebcamStopTask();
-      // kill any existing clients
-      WcEndStream();
-      // kill any existing rtsp clients
-      WcEndRTSP();
+      // this stops the camera clock, and sets
+      // a boolean which prevents us starting it
+      WcInterrupt(0);
 
       if (Wc.up){
-        // kill the camera driver
-        esp_camera_deinit();
+        // kill the camera driver, and power off camera
+        WcCamOff();
         AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: Deinit Restart"));
-        Wc.up = 0;
       }
+      WcSetStreamserver(0);
       // give it a moment for any tasks to finish
       vTaskDelay(100 / portTICK_PERIOD_MS);
       AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: FUNC_SAVE_BEFORE_RESTART after delay"));
