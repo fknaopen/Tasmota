@@ -109,6 +109,8 @@ As soon as the screenshare ended, back to 53fps at 30mhz clock.
  * WcConvertFrameN <format> <scale> - convert a wcgetframe in picstore from jpeg to <format> (0=2BPP/RGB565, 3=1BPP/GRAYSCALE, 5=3BPP/RGB888), <scale> (0-3)
  *     converts in place, replacing the stored frame with the new format.  Data can be retrieved using wcgetpicstoreN (e.g. for use in berry)
  *     will fail if it can't convert or allocate.
+ * 
+ * WcPowerOff - power down camera.  WcInit will bring it back up.
 
 ### Enable motion detection interval
 WCsetMotiondetect <timems>
@@ -199,6 +201,7 @@ Wifi use has a big effect on framerate.
  * SH 2023-05-14 - added mutex for many webcam functions - this is to prevent multi-threaded access to the camera functions, which 
  * can case error 0x105 upon re-init.
  * Errors 0x103 and 0xffffffff could indicate CAM_PWDN incorrect.
+ * Error 0x105 is likely caused by the camera not being powered long enough before init.
  * 
  * I2C use: if USE_I2C is enabled, you can set GPIO26 to I2c_SDA/2 and GPIO27 to I2C_SCL/2, and then use the shared I2C bus 2.
  * Then you can use cmd i2cscan2 to check for camera presence.
@@ -545,7 +548,7 @@ void Wcencode_reset(struct tag_wc_one_jpeg *dest){
 // xdrv_50_filesystem.ino - bool TfsSaveFile(const char *fname, const uint8_t *buf, uint32_t len)
 // support_esp.ino - void NvmSave(const char *sNvsName, const char *sName, const void *pSettings, unsigned nSettingsLen)
 void WcInterrupt(uint32_t state) {
-  TasAutoMutex localmutex(&WebcamMutex, "WcInterrupt", 200);
+  TasAutoMutex localmutex(&WebcamMutex, "WcInterrupt", 20000);
   // Stop camera ISR if active to fix TG1WDT_SYS_RESET
   if (!Wc.up) { return; }
 
@@ -1127,6 +1130,7 @@ struct WC_Motion {
   uint8_t scale; /*0=native, 1=/2, 2=/4, 3=/8*/
   uint8_t swscale; // skips pixels 0=native, 1=/2, 2=/4, 3=/8 - after scale
   uint8_t enable_diffbuff; // enable create of a buffer containing the last difference image
+  uint8_t enable_backgroundbuff;
 
   uint8_t pixelThreshold;
   uint8_t pixel_trigger_limit; // pertenthousand changed pixels
@@ -1146,7 +1150,10 @@ struct WC_Motion {
   uint32_t motion_brightness; // last frame brightness read (~15000)
 
   uint8_t *last_motion_buffer;      // last monochrome buffer
-  uint32_t last_motion_buffer_len; 
+  uint32_t last_motion_buffer_len;
+
+  uint8_t *backgroundbuff; // background used in preference to last_motion_buffer if enabled
+  uint32_t backgroundbuff_len;
 
   uint8_t *diff_buffer; // mono absolute buffer
   uint32_t diff_buffer_len; // 
@@ -1464,6 +1471,13 @@ void HandleImagemotionlbuff(){
   int height = wc_motion.scaledheight;
   HandleImagemotion(wc_motion.last_motion_buffer, wc_motion.last_motion_buffer_len, width, height);
 }
+
+void HandleImagemotionbackgroundbuff(){
+  int width = wc_motion.scaledwidth;
+  int height = wc_motion.scaledheight;
+  HandleImagemotion(wc_motion.backgroundbuff, wc_motion.backgroundbuff_len, width, height);
+}
+
 
 
 void HandleWebcamMjpeg(void) {
@@ -1816,6 +1830,13 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
       (wc_motion.required_motion_buffer_len != last_motion_buffer_len)){
     newbuffers = true;
   }
+
+  if ((wc_motion.enable_backgroundbuff && !wc_motion.backgroundbuff) ||
+      (!wc_motion.enable_backgroundbuff && wc_motion.backgroundbuff) ||
+      (wc_motion.backgroundbuff_len != last_motion_buffer_len)){
+    newbuffers = true;
+  }
+
   if (wc_motion.mask_buffer && wc_motion.mask_buffer_len != last_motion_buffer_len){
     AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: freeing mask buffer: len mismatch - %d != %d"), wc_motion.mask_buffer_len, last_motion_buffer_len);
     // if the mask buffer is the wrong size, just free it with error
@@ -1848,6 +1869,12 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
       wc_motion.diff_buffer = nullptr;
       wc_motion.diff_buffer_len = 0;
     }
+    // optional diff buffer
+    if (wc_motion.backgroundbuff){
+      free(wc_motion.backgroundbuff);
+      wc_motion.backgroundbuff = nullptr;
+      wc_motion.backgroundbuff_len = 0;
+    }
 
     wc_motion.frame_buffer = (uint8_t *)heap_caps_aligned_alloc(4, frame_buffer_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (wc_motion.frame_buffer){
@@ -1864,6 +1891,15 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
             AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: motion: new diff buffer of %d"), last_motion_buffer_len);
           } else {
             AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: unable to allocate diff buffer of %d"), frame_buffer_len);
+          }
+        }
+        if (wc_motion.enable_backgroundbuff){
+          wc_motion.backgroundbuff = (uint8_t *)heap_caps_aligned_alloc(4, last_motion_buffer_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+          if (wc_motion.backgroundbuff){
+            wc_motion.backgroundbuff_len = last_motion_buffer_len;
+            AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: motion: new background buffer of %d"), last_motion_buffer_len);
+          } else {
+            AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: unable to allocate background buffer of %d"), frame_buffer_len);
           }
         }
       } else {
@@ -1912,6 +1948,7 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
 
   // difference buffer - may be nullptr unless enabled
   uint8_t *pxdy = wc_motion.diff_buffer;
+  uint8_t *pxby = wc_motion.backgroundbuff;
   // convert to bw
 
   //uint64_t accu = 0;
@@ -1930,11 +1967,18 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
     uint8_t *pxi = pxiy;
     uint8_t *pxr = pxry;
     uint8_t *pxd = pxdy; // may be nullptr;
+    uint8_t *pxb = pxby; // may be nullptr;
     uint8_t *pxm = pxmy; // may be nullptr;
     for (int i = 0; i < wc_motion.frame_buffer_len; i++){
       // if we have a mask, and the mask pixel value > 20, then ignore this pixel
       uint8_t gray = *pxi;
       if (pxm && (*pxm > 20)) {
+        if (pxb) {
+          if (wc_motion.capture_background){
+            *pxb = *pxi;
+          }
+          pxb++;
+        }
         pxi++;
         *(pxr++) = gray; // set background regardless
         pxm++;
@@ -1942,19 +1986,27 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
           *(pxd++) = 0; // clear diff
         }
       } else {
-        uint8_t diff = abs((int)(*pxi) - (int)(*pxr));
+        uint8_t diff;
+        if (pxb){
+          diff = abs((int)(*pxi) - (int)(*pxb));
+          if (wc_motion.capture_background){
+            *pxb = *pxi;
+          }
+          pxb++;
+        } else {
+          diff = abs((int)(*pxi) - (int)(*pxr));
+        }
         *(pxr++) = gray;
         pxi++;
+        accu += diff;
         // store difference image
-        if (pxd) *pxd = diff;
         // look at pixel threshold if configured
         if (thresh && diff > thresh){
           changedPixelCount++;
-          if (pxd) *pxd = 255;
+          if (pxd) diff = 255;
         }
-        if (pxd) pxd++;
+        if (pxd) *(pxd++) = diff;
         if (pxm) pxm++;
-        accu += diff;
       }
       bright += gray;
     }
@@ -1971,39 +2023,54 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
       uint8_t *pxi = pxiy + y*stride;
       uint8_t *pxr = pxry + y*scaledwidth;
       uint8_t *pxd = nullptr;
+      uint8_t *pxb = nullptr;
       uint8_t *pxm = nullptr;
       if (pxdy) pxd = pxdy + y*scaledwidth;
+      if (pxby) pxb = pxby + y*scaledwidth;
       if (pxmy) pxm = pxmy + y*scaledwidth;
       for (x = 0; x < scaledwidth;x ++) {
         int32_t gray = *pxi;
         if (pxm && (*pxm > 20)) {
+          if (pxb) {
+            if (wc_motion.capture_background){
+              *pxb = gray;
+            }
+            pxb++;
+          }
           pxi += xincrement;
           *(pxr++) = gray;
           pxm++;
-          if (pxd) {
-            *(pxd++) = 0; // clear diff
-          }
+          if (pxd) *(pxd++) = 0; // clear diff
         } else {
-          int32_t lgray = *pxr;
-          uint8_t diff = abs(gray - lgray);
+          uint8_t diff;
+          if (pxb){
+            diff = abs((int)(gray) - (int)(*pxb));
+            if (wc_motion.capture_background){
+              *pxb = gray;
+            }
+            pxb++;
+          } else {
+            diff = abs((int)(gray) - (int)(*pxr));
+          }
           *(pxr++) = gray;
           pxi += xincrement;
+          accu += diff;
 
-          // store difference image
-          if (pxd) *pxd = diff;
           // look at pixel threshold if configured
           if (thresh && diff > thresh){
             changedPixelCount++;
-            if (pxd) *pxd = 255;
+            if (pxd) diff = 255;
           }
-          if (pxd) pxd++;
+          // store difference image
+          if (pxd) *(pxd++) = diff;
           if (pxm) pxm++;
-          accu += diff;
         }
         bright += gray;
       }
     }
   }
+
+  wc_motion.capture_background = 0;
 
   // when scaledpixelcount is < 100, float becomes necessary
   float divider = (((float)scaledpixelcount) / 100.0);
@@ -2617,6 +2684,7 @@ void WcPicSetup(void) {
   WebServer_on(PSTR("/motionmask.jpg"), HandleImagemotionmask);
   WebServer_on(PSTR("/motionbuff.jpg"), HandleImagemotionbuff);
   WebServer_on(PSTR("/motionlbuff.jpg"), HandleImagemotionlbuff);
+  WebServer_on(PSTR("/motionbackgroundbuff.jpg"), HandleImagemotionbackgroundbuff);
 }
 
 
@@ -2988,6 +3056,14 @@ void CmndWebcamSetMotionDetect(void) {
         res = 0;
       }
     } break;
+    case 9: // enable use of a background frame - readable
+      // and trigger capture of next wc_motion image into background
+      if (XdrvMailbox.payload >= 0 && XdrvMailbox.payload <= 1){
+        wc_motion.enable_backgroundbuff = XdrvMailbox.payload & 1;
+        wc_motion.capture_background = 1;
+      }
+      res = wc_motion.enable_diffbuff;
+      break;
   }
   ResponseCmndNumber(res);
 }
@@ -3061,6 +3137,10 @@ void CmndWebcamGetMotionPixels(void) {
     case 3:{ // optional mask buffer
       t = wc_motion.mask_buffer;
       len = wc_motion.mask_buffer_len;
+    } break;
+    case 4:{ // optional background buffer
+      t = wc_motion.backgroundbuff;
+      len = wc_motion.backgroundbuff_len;
     } break;
   }
   char resp[50] = "0";
