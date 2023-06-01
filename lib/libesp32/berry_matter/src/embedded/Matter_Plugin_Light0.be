@@ -52,8 +52,10 @@ class Matter_Plugin_Light0 : Matter_Plugin_Device
   def update_shadow()
     import light
     var light_status = light.get()
-    var pow = light_status.find('power', nil)
-    if pow != self.shadow_onoff self.attribute_updated(0x0006, 0x0000)   self.shadow_onoff = pow end
+    if light_status != nil
+      var pow = light_status.find('power', nil)
+      if pow != self.shadow_onoff self.attribute_updated(0x0006, 0x0000)   self.shadow_onoff = pow end
+    end
     super(self).update_shadow()
   end
 
