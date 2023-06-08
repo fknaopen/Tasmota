@@ -20,7 +20,7 @@
 #ifdef ESP32
 #ifdef USE_WEBCAM_TASK
 
-#define WC_USE_RGB888_DECODE      
+#define WC_USE_RGB_DECODE
 
 /*********************************************************************************************\
  * ESP32 webcam based on example in Arduino-ESP32 library
@@ -94,7 +94,12 @@ As soon as the screenshare ended, back to 53fps at 30mhz clock.
  * WcSavepicN     = save a picture 1-4 after WcGetframe or WcSavepic0 to get frame 1 and save. argument is filename
  * WcAppendpicN   = append a picture 1-4 to a file after WcGetframe or WcSavepic0 to get frame 1 and save. argument is filename
  * WcGetpistoreN  = read buff, addr, len of a stored image, returns json (e.g. for berry)
- * WcGetmotionpixels = read addr, len of motion(1) or difference(2) buffer - e.g for berry
+ * WcGetmotionpixelsN = (N=1..4) read addr, len, w, h as JSON {"addr":123456,"len":12345,"w":160,"h":120} 
+ *    motion(1)
+ *    difference(2) buffer - e.g for berry
+ *    mask(3)
+ *    background(4)
+ *     e.g. could be used to read pixels, or change pixels from berry.
 
  * WcMenuvideoon   = turn on video in main menu
  * WcMenuvideooff  = turn off video in main menu
@@ -111,6 +116,14 @@ As soon as the screenshare ended, back to 53fps at 30mhz clock.
  *     will fail if it can't convert or allocate.
  * 
  * WcPowerOff - power down camera.  WcInit will bring it back up.
+ * WcSetPicture - SetPictureN (N=1-MAX_PICTORE) expects 'addr len format [width height]
+ *   use to populate a frame in Wc.picstore from Berry.  e.g. to put a JPEG mask there
+ *   so you can then decode it, get it's address, get the address of the current mask, and 
+ *   copy data across.
+ *   if sending JPEG (format=0|5), width and height are calculated on decode.
+ *   if sending pixels (format=4(GRAY)|6(RGB)|1(RGB565)), width and height are required, and used to allocate.
+ *   binary data is copied from addr.  i.e. you can send the addr/len from Berry introspect bytes.
+ *    ideas: could be used to set background image based on time of day.
 
 ### Enable motion detection interval
 WCsetMotiondetect <timems>
@@ -262,6 +275,11 @@ These will save or append a picture to a file.  The picture must have been first
 #include "esp_jpg_decode.h"
 //#include "img_converters.h"
 
+#ifdef USE_UFILESYS
+extern FS *ufsp;
+extern FS *ffsp;
+#endif
+
 bool HttpCheckPriviledgedAccess(bool);
 extern ESP8266WebServer *Webserver;
 
@@ -302,7 +320,8 @@ const int nativeIntervals20ms[] = {
 #define MAX_PICSTORE 4
 #endif
 
-// reproduction of camera_fb_t - but since thiers may change, don't memcpy
+// our basic picture store
+// we use this both in wc_picstore and elsewhere
 struct PICSTORE {
   uint8_t * buff;              /*!< Pointer to the pixel data */
   size_t len;                 /*!< Length of the buffer in bytes */
@@ -310,6 +329,7 @@ struct PICSTORE {
   uint16_t height;              /*!< Height of the buffer in pixels */
   int8_t format;         /*!< Format of the pixel data */
   struct timeval timestamp;   /*!< Timestamp since boot of the first DMA buffer of the frame */  
+  int allocatedLen; // -1 or 0 indicates failure to allocate
 };
 
 #ifdef ENABLE_RTSPSERVER
@@ -369,6 +389,7 @@ typedef struct tag_wc_client {
 struct {
   // status variables
   uint8_t  up = 0;
+  uint8_t  psram = 0; // indicates if we found psram or not. Suspect always true for esp32cam modules
   volatile uint16_t width; // last JPEG frame height received or 0
   volatile uint16_t height; // last JPEG frame height received or 0
   volatile uint32_t last_frame_len; // last JPEG frame length or 0
@@ -388,19 +409,19 @@ struct {
   uint8_t  berryFrames;
   volatile uint16_t lenDiffLimit;
   volatile int32_t skipFrames;
-  /*
-  0->PIXFORMAT_JPEG
-  1->PIXFORMAT_RGB565,    // 2BPP/RGB565 - valid?
-    PIXFORMAT_YUV422,    // 2BPP/YUV422 - valid?
-    PIXFORMAT_YUV420,    // 1.5BPP/YUV420 - invalid?
-    PIXFORMAT_GRAYSCALE, // 1BPP/GRAYSCALE - valid?
-    PIXFORMAT_JPEG,      // JPEG/COMPRESSED - valid
-    PIXFORMAT_RGB888,    // 3BPP/RGB888 - invalid?
-    PIXFORMAT_RAW,       // RAW - invalid?
-    PIXFORMAT_RGB444,    // 3BP2P/RGB444 - invalid?
-  9->PIXFORMAT_RGB555,    // 3BP2P/RGB555 - invalid?
+  /* camPixelFormat is format +1, i.e.
+  0->4->PIXFORMAT_JPEG
+  1->0->PIXFORMAT_RGB565,    // 2BPP/RGB565 - valid?
+  2->1->PIXFORMAT_YUV422,    // 2BPP/YUV422 - valid?
+  3->2->PIXFORMAT_YUV420,    // 1.5BPP/YUV420 - invalid?
+  4->3->PIXFORMAT_GRAYSCALE, // 1BPP/GRAYSCALE - valid?
+  5->4->PIXFORMAT_JPEG,      // JPEG/COMPRESSED - valid
+  6->5->PIXFORMAT_RGB888,    // 3BPP/RGB888 - invalid?
+  7->6->PIXFORMAT_RAW,       // RAW - invalid?
+  8->7->PIXFORMAT_RGB444,    // 3BP2P/RGB444 - invalid?
+  9->8->>PIXFORMAT_RGB555,    // 3BP2P/RGB555 - invalid?
   */
-  volatile uint8_t  camPixelFormat; // set to n to trigger capture of n frames to picstore
+  volatile uint8_t  camPixelFormat; // 
 
   // our (separate) webserver on port 81
   ESP8266WebServer *CamServer;
@@ -439,6 +460,139 @@ struct {
 } WcStats;
 
 
+// allocate a PICSTORE buffer.
+// for PIXFORMAT_JPEG:
+//   set bpp_orsize to the size of the jpeg file
+//   width and height are unused
+// for pixel based formats
+//   size is based on width*height*(bytes per pixel)+4
+// allocstyle: 
+//   0->always free & alloc
+//   1->realloc only if not big enough
+//   2->realloc only if not big enough, and copy data
+#define WC_ALLOC_ALWAYS 0
+#define WC_REALLOC_IF_SMALLER 1
+#define WC_REALLOC_WITH_COPY 2
+
+#define WC_USE_FAST_MEM 0x10
+
+bool pic_alloc(struct PICSTORE *ps, int width, int height, int jpegsize, int format, int allocstyle){
+  int len = 0;
+  bool res = false;
+  uint8_t* orgbuf = nullptr;
+  int orglen = 0;
+
+  if (!ps){
+    AddLog(LOG_LEVEL_ERROR, PSTR("CAM: pic_alloc ps null"));
+    return false;
+  }
+
+  switch(format){
+    default:                  len = 0; break;
+    case PIXFORMAT_JPEG:      len = jpegsize; break;
+    case PIXFORMAT_GRAYSCALE: len = width*height + 4; break;
+    case PIXFORMAT_RGB888:    len = width*height*3 + 4; break;
+    case PIXFORMAT_RGB565:    len = width*height*2 + 4; break;
+  }
+
+  if (!len){
+    AddLog(LOG_LEVEL_ERROR, PSTR("CAM: pic_alloc invalid format or len 0"));
+    return false;
+  }
+
+  switch(allocstyle & 0xf){
+    case WC_ALLOC_ALWAYS: // just free & allocate, unless no change
+      if (len != ps->allocatedLen){
+        ps->allocatedLen = -1; // force realloc
+      }
+      break;
+    case WC_REALLOC_IF_SMALLER: // allocate if buf not big enough
+      // will use ps->allocatedLen to check below
+      break;
+    case WC_REALLOC_WITH_COPY: // allocate and copy data if buf not big enough
+      orgbuf = ps->buff;
+      orglen = ps->allocatedLen;
+      break;
+  }
+
+  if (ps->allocatedLen < len){
+    free(ps->buff);
+    memset(ps, 0, sizeof(*ps));
+  }
+  if (!ps->buff){
+    if (len){
+      if ((allocstyle & WC_USE_FAST_MEM) || !Wc.psram){
+        ps->buff = (uint8_t *)malloc(len);
+      } else {
+        ps->buff = (uint8_t *)heap_caps_aligned_alloc(4, len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      }
+      if (ps->buff) ps->allocatedLen = len;
+      if (orgbuf && orglen){
+        memcpy(ps->buff, orgbuf, orglen);
+      }
+    }
+  }
+  if (ps->buff){
+    ps->len = len;
+    // don't change  if 0 in, as jpeg decode sets at start only
+    if (width) ps->width = width;
+    if (height) ps->height = height;
+    ps->format = format;
+  }
+
+  if (ps->buff) res = true;
+  return res;
+}
+
+// return true if pic had content.
+bool pic_free(struct PICSTORE *ps){
+  bool res = false;
+  if (ps){
+    if (ps->buff){
+      free(ps->buff);
+      res = true;
+    }
+    memset(ps, 0, sizeof(*ps));
+  }
+  return res;
+}
+
+bool pic_alloc_p(struct PICSTORE **pps, int width, int height, int jpegsize, int format, int allocstyle){
+  if (!*pps){
+    *pps = (struct PICSTORE *)malloc(sizeof(struct PICSTORE));
+    memset(*pps, 0, sizeof(struct PICSTORE));
+  }
+  if (*pps){
+    return pic_alloc(*pps, width, height, jpegsize, format, allocstyle);
+  }
+  return false;
+}
+bool pic_free_p(struct PICSTORE **pps){
+  bool res = false;
+  if (*pps){
+    res = pic_free(*pps);
+    free(*pps);
+    *pps = nullptr;
+  }
+  return res;
+}
+
+
+bool wc_check_format(int format){
+  switch(format){
+    case PIXFORMAT_JPEG:      return true;
+    case PIXFORMAT_GRAYSCALE: return true;
+#ifdef WC_USE_RGB_DECODE    
+    case PIXFORMAT_RGB888:    return true;
+    case PIXFORMAT_RGB565:    return true;
+#endif
+  }
+  return false;
+}
+
+
+
+
 
 /*********************************************************************************************/
 // functions to encode into a jpeg buffer.
@@ -446,22 +600,14 @@ struct {
 // single expanding jpeg buffer for encode into
 // call encode_reset() to maybe recover from failure to allocate.
 
-// structure of our frame store.
-// for some wierd compilation thing, we can't mention camera types in 
-// structures or function definitions? (related to ino -> cpp conversion?)
-typedef struct tag_wc_one_jpeg {
-  uint8_t * fb_buf;              /*!< Pointer to the pixel data */
-  size_t fb_len;                 /*!< Length of the buffer in bytes */
-  size_t fb_width;               /*!< Width of the buffer in pixels */
-  size_t fb_height;              /*!< Height of the buffer in pixels */
-  int fb_format;         /*!< Format of the pixel data */
-  int allocatedLen; // -1 indicates failure to allocate, never recover.
-} wc_one_jpeg;
-
 #define DEFAULT_INITIAL_JPEG_LEN 16384
 
-struct tag_wc_one_jpeg OurOneJpeg;
-struct tag_wc_one_jpeg VideoJpeg;
+// static store for taking pictures
+struct PICSTORE OurOneJpeg = {0};
+
+// static store for video.
+// we only re-allocate if the jpeg is larger, to stop malloc churn.
+struct PICSTORE VideoJpeg = {0};
 
 
 // this is a callback called from the fmt2jpg_cb in WcencodeToJpeg.
@@ -471,51 +617,42 @@ struct tag_wc_one_jpeg VideoJpeg;
 // avoid memory fragmentation, and be a little faster.
 // ocb(oarg, index, data, len);
 size_t WcJpegEncoderStore_jpg_out_cb(void * arg, size_t index, const void* data, size_t len){
-  struct tag_wc_one_jpeg *p = (struct tag_wc_one_jpeg *)arg; 
+  struct PICSTORE *p = (struct PICSTORE *)arg; 
   if (p->allocatedLen < 0){
     return 0;
   }
-  if (!p->fb_buf){
-    p->allocatedLen = DEFAULT_INITIAL_JPEG_LEN;
-    p->fb_buf = (uint8_t *)heap_caps_aligned_alloc(4, p->allocatedLen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: jpeg alloced %d->%d at %X"), 0, p->allocatedLen, p->fb_buf);
-    if (!p->fb_buf){
-      p->fb_len = 0;
-      p->allocatedLen = -1;
+  if (!p->buff){
+    pic_alloc(p, 0, 0, DEFAULT_INITIAL_JPEG_LEN, PIXFORMAT_JPEG, 0);
+    AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: jpeg alloced %d->%d at %X"), 0, p->allocatedLen, p->buff);
+    if (!p->buff){
       return 0;
     }
   }
 
   if (index + len > p->allocatedLen){
     int oldlen = p->allocatedLen;
-    p->allocatedLen += len + 2048;
-    uint8_t *newbuf = (uint8_t *)heap_caps_aligned_alloc(4, p->allocatedLen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    uint8_t *oldbuf = p->fb_buf;
-    p->fb_buf = nullptr;
-    if (!newbuf){
+    // re-allocate buffer with memcoy of data
+    pic_alloc(p, 0, 0, len + 2048, PIXFORMAT_JPEG, 2);
+    if (!p->buff){
       AddLog(LOG_LEVEL_ERROR, PSTR("CAM: jpeg alloc failed to get %d"), p->allocatedLen);
-      p->allocatedLen = -1;
       return 0;
     } else {
-      AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: jpeg re-alloced %d->%d at %X"), oldlen, p->allocatedLen, newbuf);
-      memcpy(newbuf, oldbuf, p->fb_len);
-      p->fb_buf = newbuf;
+      AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: jpeg re-alloced %d->%d at %X"), oldlen, p->allocatedLen, p->buff);
     }
-    free(oldbuf);
   }
 
-
-  if (p->fb_buf + index + len > p->fb_buf + p->allocatedLen ){
+  if (p->buff + index + len > p->buff + p->allocatedLen ){
     AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: jpeg overlen??? %d+%d > %d at %X"), index, len, p->allocatedLen);
     return 0;
   }
-  if (p->fb_buf + index + len < p->fb_buf ){
+  if (p->buff + index + len < p->buff ){
     AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: jpeg -ve index??? %d+%d < %d at %X"), index, len, 0);
     return 0;
   }
 
-  memcpy(p->fb_buf + index, data, len);
-  p->fb_len = index+len;
+  memcpy(p->buff + index, data, len);
+  // record len used
+  p->len = index+len;
   return len;
 }
 
@@ -525,16 +662,14 @@ size_t WcJpegEncoderStore_jpg_out_cb(void * arg, size_t index, const void* data,
 // when we primarily want to process pixels (e.g. tensorflow).
 // dest is filled if it returns true.
 // DO NOT FREE BUFFER.
-bool WcencodeToJpeg(uint8_t *src, size_t srclen, int width, int height, int format, uint8_t quality, struct tag_wc_one_jpeg *dest){
-  dest->fb_format = (int)PIXFORMAT_JPEG;
+bool WcencodeToJpeg(uint8_t *src, size_t srclen, int width, int height, int format, uint8_t quality, struct PICSTORE *dest){
+  dest->format = (int)PIXFORMAT_JPEG;
   bool converted = fmt2jpg_cb(src, srclen, width, height, (pixformat_t )format, quality, WcJpegEncoderStore_jpg_out_cb, (void *) dest);
-  return converted && dest->fb_buf;
+  return converted && dest->buff;
 }
 
-void Wcencode_reset(struct tag_wc_one_jpeg *dest){
-  free(dest->fb_buf);
-  dest->fb_len = 0;
-  dest->allocatedLen = 0;
+void Wcencode_reset(struct PICSTORE *dest){
+  pic_free(dest);
 }
 /*********************************************************************************************/
 
@@ -891,8 +1026,8 @@ uint32_t WcSetup(int32_t fsiz) {
   // if PSRAM IC present, init with UXGA resolution and higher JPEG quality
   //                      for larger pre-allocated frame buffer.
 
-  bool psram = UsePSRAM();
-  if (psram) {
+  Wc.psram = UsePSRAM();
+  if (Wc.psram) {
     config.frame_size = FRAMESIZE_UXGA;
     config.jpeg_quality = 10;
     config.fb_count = 2;
@@ -952,7 +1087,7 @@ uint32_t WcSetup(int32_t fsiz) {
 
   AddLog(LOG_LEVEL_INFO, PSTR("CAM: %s Initialized"), info->name);
   Wc.up = 1;
-  if (psram) { Wc.up = 2; }
+  if (Wc.psram) { Wc.up = 2; }
 
   Wc.frameIntervalsus = (uint32_t)(((float)nativeIntervals20ms[fsiz]/((float)Settings->webcam_clk/20.0))*1000.0);
   WcStats.maxfps = (uint32_t)((float)1000000.0/(float)Wc.frameIntervalsus);
@@ -1131,10 +1266,12 @@ struct WC_Motion {
   uint8_t swscale; // skips pixels 0=native, 1=/2, 2=/4, 3=/8 - after scale
   uint8_t enable_diffbuff; // enable create of a buffer containing the last difference image
   uint8_t enable_backgroundbuff;
+  uint8_t capture_background;
 
   uint8_t pixelThreshold;
-  uint8_t pixel_trigger_limit; // pertenthousand changed pixels
+  uint32_t  pixel_trigger_limit; // pertenthousand changed pixels
 
+  uint8_t enable_mask; // enable mask buffer
   uint32_t auto_mask; // number of motion runs to run automask over
   uint8_t auto_mask_pixel_threshold; // pixel change threshold to add pixel to mask
   uint8_t auto_mask_pixel_expansion; // number of pixels atound the detected pixel to set in mask (square)
@@ -1149,21 +1286,18 @@ struct WC_Motion {
   uint32_t motion_trigger; // last amount of difference measured (~100 for none, > ~1000 for motion?)
   uint32_t motion_brightness; // last frame brightness read (~15000)
 
-  uint8_t *last_motion_buffer;      // last monochrome buffer
-  uint32_t last_motion_buffer_len;
+  // jpeg is decoded (with scale) into here.
+  struct PICSTORE *frame;
+  // the others are both scale and swscale
+  // the last image - to compare against.
+  struct PICSTORE *last_motion;
+  // optional - the last difference.
+  struct PICSTORE *diff;
+  // optional - a mask to stop differences in set pixels triggering motion
+  struct PICSTORE *mask;
+  // Optional static background image - to compare against.
+  struct PICSTORE *background;
 
-  uint8_t *backgroundbuff; // background used in preference to last_motion_buffer if enabled
-  uint32_t backgroundbuff_len;
-
-  uint8_t *diff_buffer; // mono absolute buffer
-  uint32_t diff_buffer_len; // 
-
-  uint8_t *frame_buffer; // full size colour buffer
-  uint32_t frame_buffer_len; // actual frame buffer len if allocated
-
-  uint8_t *mask_buffer; // monochrome 8 bit mask - manually created, only (x,y) where pixels are < 20 are tested for motion
-  uint32_t mask_buffer_len; // monochrome 8 bit mask buffer len if allocated
-  
   int scaledwidth;
   int scaledheight;
   uint32_t changedPixelPertenthousand;
@@ -1193,17 +1327,12 @@ uint32_t WcSetMotionDetect(int32_t value) {
     // don't free whilst buffer in use
     TasAutoMutex localmutex(&WebcamMutex, "HandleImage", 200);
     wc_motion.motion_state = 0;  // prevent set of output to stop bad detect at start
-    // free existing - e.g. on size change
-    if (wc_motion.frame_buffer){
-      free(wc_motion.frame_buffer);
-      wc_motion.frame_buffer = nullptr;
-      wc_motion.frame_buffer_len = 0;
-    }
-    if (wc_motion.last_motion_buffer){
-      free(wc_motion.last_motion_buffer);
-      wc_motion.last_motion_buffer = nullptr;
-      wc_motion.last_motion_buffer_len = 0;
-    }
+    pic_free_p(&wc_motion.frame);
+    pic_free_p(&wc_motion.last_motion);
+    pic_free_p(&wc_motion.diff);
+    pic_free_p(&wc_motion.mask);
+    pic_free_p(&wc_motion.background);
+
     wc_motion.motion_trigger = 0;
     wc_motion.motion_brightness = 0;
   }
@@ -1277,33 +1406,22 @@ bool WcConvertFrame(int32_t bnum_i, int format, int scale) {
   // if jpeg decode
   bool res = false;
   if (ps->format == PIXFORMAT_JPEG && format != PIXFORMAT_JPEG) {
-    camera_fb_t wc_fb;
-    memset(&wc_fb, 0, sizeof(wc_fb));
-    res = convertJpegToPixels(ps->buff, ps->len, ps->width, ps->height, scale, format, &wc_fb);
-
+    struct PICSTORE psout = {0};
+    res = convertJpegToPixels(ps->buff, ps->len, ps->width, ps->height, scale, format, &psout);
     if (res) {
       free(ps->buff);
-      ps->buff = wc_fb.buf;
-      ps->len = wc_fb.len;
-      ps->width = (uint16_t)wc_fb.width;
-      ps->height = (uint16_t)wc_fb.height;
-      ps->format = (int8_t)wc_fb.format;
+      memcpy(ps, &psout, sizeof(*ps));
     }
   } else {
     // must be jpeg encode
       // we don't support conversion excet to and from jpeg.
     if (format == PIXFORMAT_JPEG) {
-      struct tag_wc_one_jpeg TempOneJpeg;
-      memset(&TempOneJpeg, 0, sizeof(TempOneJpeg));
+      struct PICSTORE psout = {0};
       // will allocate just enough if > 16k required
-      res = WcencodeToJpeg(ps->buff, ps->len, ps->width, ps->height, (int)ps->format, 80, &TempOneJpeg);
+      res = WcencodeToJpeg(ps->buff, ps->len, ps->width, ps->height, (int)ps->format, 80, &psout);
       if (res) {
         free(ps->buff);
-        ps->buff = TempOneJpeg.fb_buf;
-        ps->len = TempOneJpeg.fb_len;
-        ps->width = (uint16_t)TempOneJpeg.fb_width;
-        ps->height = (uint16_t)TempOneJpeg.fb_height;
-        ps->format = (int8_t)TempOneJpeg.fb_format;
+        memcpy(ps, &psout, sizeof(*ps));
       }
     }
   }
@@ -1375,8 +1493,7 @@ void HandleImage(void) {
         Webserver->sendContent(response);
         client.write((char *)Wc.snapshotStore.buff, Wc.snapshotStore.len);
         client.stop();
-        free(Wc.snapshotStore.buff);
-        Wc.snapshotStore.len = 0;
+        pic_free(&Wc.snapshotStore);
       } else {
         Webserver->send(404,"",""); 
         AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: No image #: %d"), bnum);
@@ -1405,79 +1522,85 @@ void HandleImage(void) {
   AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("CAM: Sending image #: %d"), bnum+1);
 }
 
-void HandleImagemotion(uint8_t *src, uint8_t len, int width, int height){
+void HandleImageAny(struct PICSTORE *ps){
   if (!HttpCheckPriviledgedAccess()) { return; }
 
-  if (!src) {
+  if (!ps || !ps->buff) {
+    AddLog(LOG_LEVEL_ERROR, PSTR("CAM: image not present"));
     Webserver->send(404,"",""); 
     return;
   }
-
   // convert mono to rgb8
-  uint8_t *buf = src;
-  if (buf){
+
+  size_t _jpg_buf_len = 0;
+  uint8_t * _jpg_buf = NULL;
+  // use a malloc that we don't free to save memory creep
+  // it is re-mallcoed if the frame does not fit.
+  bool conv;
+
+  // allocate a new picture every time to avoid holding up task thread by using OurOneJpeg
+  struct PICSTORE psout = {0};
+
+  if (ps->format != PIXFORMAT_JPEG) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: image will be encoded from %d"), ps->format);
+
     TasAutoMutex localmutex(&WebcamMutex, "HandleImagemotion", 2000);
-    size_t _jpg_buf_len = 0;
-    uint8_t * _jpg_buf = NULL;
     // use a malloc that we don't free to save memory creep
     // it is re-mallcoed if the frame does not fit.
-    bool conv = WcencodeToJpeg(buf, len, width, height, (int)PIXFORMAT_GRAYSCALE, 80, &OurOneJpeg);
+    AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: %x %d %d %d"), ps->buff, ps->len, ps->width, ps->height);
+    conv = WcencodeToJpeg(ps->buff, ps->len, ps->width, ps->height, (int)ps->format, 80, &psout);
+    if (!conv) AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: image encode failed"));
 
-    _jpg_buf_len = OurOneJpeg.fb_len;
-    _jpg_buf = OurOneJpeg.fb_buf;
+    _jpg_buf_len = psout.len;
+    _jpg_buf = psout.buff;
     AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: encoded %X %d (%dx%d) -> %X %d (%d)"),
-      buf, len, width, height,
+      ps->buff, ps->len, ps->width, ps->height,
       _jpg_buf, _jpg_buf_len,
-      OurOneJpeg.allocatedLen
+      psout.allocatedLen
     );
-
-    //bool conv = frame2jpg(&fb, 80, &_jpg_buf, &_jpg_buf_len);
-
-    if (conv && _jpg_buf_len){
-      WiFiClient client = Webserver->client();
-      String response = "HTTP/1.1 200 OK\r\n";
-      response += "Content-disposition: inline; filename=cap.jpg\r\n";
-      response += "Content-type: image/jpeg\r\n\r\n";
-      Webserver->sendContent(response);
-      client.write((char *)_jpg_buf, _jpg_buf_len);
-      client.stop();
-      //free(_jpg_buf);
-      return; // don't send 500
-    }
-    //free(_jpg_buf);
+  } else {
+    _jpg_buf_len = ps->len;
+    _jpg_buf = ps->buff;
+    AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: already jpeg %X %d (%dx%d) (%d)"),
+      ps->buff, ps->len, ps->width, ps->height,
+      ps->allocatedLen
+    );
   }
+
+  if (conv && _jpg_buf_len){
+    WiFiClient client = Webserver->client();
+    String response = "HTTP/1.1 200 OK\r\n";
+    response += "Content-disposition: inline; filename=cap.jpg\r\n";
+    response += "Content-type: image/jpeg\r\n\r\n";
+    Webserver->sendContent(response);
+    client.write((char *)_jpg_buf, _jpg_buf_len);
+    client.stop();
+    pic_free(&psout);
+    return; // don't send 500
+  }
+
+  AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: image could not be encoded"));
+  pic_free(&psout);
 
   Webserver->send(500,"",""); 
   return;
 }
 
 void HandleImagemotionmask(){
-  int width = wc_motion.scaledwidth;
-  int height = wc_motion.scaledheight;
-  HandleImagemotion(wc_motion.mask_buffer, wc_motion.mask_buffer_len, width, height);
+  HandleImageAny(wc_motion.mask);
 }
 void HandleImagemotiondiff(){
-  int width = wc_motion.scaledwidth;
-  int height = wc_motion.scaledheight;
-  HandleImagemotion(wc_motion.diff_buffer, wc_motion.diff_buffer_len, width, height);
+  HandleImageAny(wc_motion.diff);
 }
 void HandleImagemotionbuff(){
-  int width = (Wc.width/(1<<wc_motion.scale));
-  int height = (Wc.height/(1<<wc_motion.scale));
-  HandleImagemotion(wc_motion.frame_buffer, wc_motion.frame_buffer_len, width, height);
+  HandleImageAny(wc_motion.frame);
 }
 void HandleImagemotionlbuff(){
-  int width = wc_motion.scaledwidth;
-  int height = wc_motion.scaledheight;
-  HandleImagemotion(wc_motion.last_motion_buffer, wc_motion.last_motion_buffer_len, width, height);
+  HandleImageAny(wc_motion.last_motion);
 }
-
 void HandleImagemotionbackgroundbuff(){
-  int width = wc_motion.scaledwidth;
-  int height = wc_motion.scaledheight;
-  HandleImagemotion(wc_motion.backgroundbuff, wc_motion.backgroundbuff_len, width, height);
+  HandleImageAny(wc_motion.background);
 }
-
 
 
 void HandleWebcamMjpeg(void) {
@@ -1567,7 +1690,7 @@ typedef struct {
         uint16_t height;
         uint16_t data_offset;
         const uint8_t *input;
-        uint8_t *output;
+        struct PICSTORE *poutput;
 } wc_rgb_jpg_decoder;
 
 /*********************************************************************************************/
@@ -1596,13 +1719,19 @@ static bool _mono_write(void * arg, uint16_t x, uint16_t y, uint16_t w, uint16_t
             //write start
             jpeg->width = w;
             jpeg->height = h;
+            if (jpeg->poutput){
+              pic_alloc(jpeg->poutput, jpeg->width, jpeg->height, 0, PIXFORMAT_GRAYSCALE, 1);
+            }
         } else {
             //write end
         }
+        if (!jpeg->poutput || !jpeg->poutput->buff)
+          return false;
         return true;
     }
-
-    uint8_t *out = jpeg->output+jpeg->data_offset;
+    if (!jpeg->poutput || !jpeg->poutput->buff)
+      return false;
+    uint8_t *out = jpeg->poutput->buff + jpeg->data_offset;
     uint8_t *o = out;
     size_t djw = jpeg->width; // ouptut stride
     size_t dl = x; // offset into output image data for x
@@ -1625,25 +1754,7 @@ static bool _mono_write(void * arg, uint16_t x, uint16_t y, uint16_t w, uint16_t
     return true;
 }
 
-// converts to a monochrome pixel array - quite fast
-bool jpg2mono(const uint8_t *src, size_t src_len, uint8_t * out, int scale)
-{
-    wc_rgb_jpg_decoder jpeg;
-    jpeg.width = 0;
-    jpeg.height = 0;
-    jpeg.input = src;
-    jpeg.output = out;
-    jpeg.data_offset = 0;
-
-    if(esp_jpg_decode(src_len, (jpg_scale_t)scale, wc_jpg_read, _mono_write, (void*)&jpeg) != ESP_OK){
-        return false;
-    }
-    return true;
-}
-
-
-#ifdef WC_USE_RGB888_DECODE      
-
+#ifdef WC_USE_RGB_DECODE      
 //output buffer and image width
 // from to_bmp.c - unfortunately thier version is static
 static bool wc_rgb_write(void * arg, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t *data)
@@ -1654,21 +1765,24 @@ static bool wc_rgb_write(void * arg, uint16_t x, uint16_t y, uint16_t w, uint16_
             //write start
             jpeg->width = w;
             jpeg->height = h;
-            //if output is null, this is BMP
-            if(!jpeg->output){
-              return false;
+            if (jpeg->poutput){
+              pic_alloc(jpeg->poutput, jpeg->width, jpeg->height, 0, PIXFORMAT_RGB888, 1);
             }
         } else {
             //write end
         }
+        if (!jpeg->poutput || !jpeg->poutput->buff)
+          return false;
         return true;
     }
+    if (!jpeg->poutput || !jpeg->poutput->buff)
+      return false;
 
     size_t jw = jpeg->width*3;
     size_t t = y * jw;
     size_t b = t + (h * jw);
     size_t l = x * 3;
-    uint8_t *out = jpeg->output+jpeg->data_offset;
+    uint8_t *out = jpeg->poutput->buff + jpeg->data_offset;
     uint8_t *o = out;
     size_t iy, ix;
 
@@ -1686,15 +1800,85 @@ static bool wc_rgb_write(void * arg, uint16_t x, uint16_t y, uint16_t w, uint16_
     return true;
 }
 
-// converts to a 3x8 bit pixel array
-// from to_bmp.c - unfortunately thier version is static
-bool wc_jpg2rgb888(const uint8_t *src, size_t src_len, uint8_t * out, int scale)
+static bool wc_rgb565_write(void * arg, uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t *data)
+{
+    wc_rgb_jpg_decoder * jpeg = (wc_rgb_jpg_decoder *)arg;
+    if(!data){
+        if(x == 0 && y == 0){
+            //write start
+            jpeg->width = w;
+            jpeg->height = h;
+            if (jpeg->poutput){
+              pic_alloc(jpeg->poutput, jpeg->width, jpeg->height, 0, PIXFORMAT_RGB565, 1);
+            }
+        } else {
+            //write end
+        }
+        if (!jpeg->poutput || !jpeg->poutput->buff)
+          return false;
+        return true;
+    }
+    if (!jpeg->poutput || !jpeg->poutput->buff)
+      return false;
+
+    // ###### TODO #####
+    // I find this code highly suspect - copied from esp camdriver
+    // seems they copied the RGB888 and adapted?
+    size_t jw = jpeg->width*3;
+    size_t jw2 = jpeg->width*2;
+    size_t t = y * jw;
+    size_t t2 = y * jw2;
+    size_t b = t + (h * jw);
+    size_t l = x * 2;
+    uint8_t *out = jpeg->poutput->buff + jpeg->data_offset;
+    uint8_t *o = out;
+    size_t iy, iy2, ix, ix2;
+
+    w = w * 3;
+
+    for(iy=t, iy2=t2; iy<b; iy+=jw, iy2+=jw2) {
+        o = out+iy2+l;
+        for(ix2=ix=0; ix<w; ix+= 3, ix2 +=2) {
+            uint16_t r = data[ix];
+            uint16_t g = data[ix+1];
+            uint16_t b = data[ix+2];
+            uint16_t c = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+            o[ix2+1] = c>>8;
+            o[ix2] = c&0xff;
+        }
+        data+=w;
+    }
+    return true;
+}
+#endif
+
+// converts to a monochrome pixel array - quite fast
+bool wc_jpg2mono(const uint8_t *src, size_t src_len, struct PICSTORE * out, int scale)
 {
     wc_rgb_jpg_decoder jpeg;
     jpeg.width = 0;
     jpeg.height = 0;
     jpeg.input = src;
-    jpeg.output = out;
+    jpeg.poutput = out;
+    jpeg.data_offset = 0;
+
+    if(esp_jpg_decode(src_len, (jpg_scale_t)scale, wc_jpg_read, _mono_write, (void*)&jpeg) != ESP_OK){
+        return false;
+    }
+    return true;
+}
+
+
+#ifdef WC_USE_RGB_DECODE      
+// converts to a 3x8 bit pixel array
+// from to_bmp.c - unfortunately thier version is static
+bool wc_jpg2rgb888(const uint8_t *src, size_t src_len, struct PICSTORE * out, int scale)
+{
+    wc_rgb_jpg_decoder jpeg;
+    jpeg.width = 0;
+    jpeg.height = 0;
+    jpeg.input = src;
+    jpeg.poutput = out;
     jpeg.data_offset = 0;
 
     if(esp_jpg_decode(src_len, (jpg_scale_t) scale, wc_jpg_read, wc_rgb_write, (void*)&jpeg) != ESP_OK){
@@ -1705,52 +1889,46 @@ bool wc_jpg2rgb888(const uint8_t *src, size_t src_len, uint8_t * out, int scale)
 #endif
 
 
+bool wc_jpg2rgb565(const uint8_t *src, size_t src_len, struct PICSTORE * out, int scale)
+{
+    wc_rgb_jpg_decoder jpeg;
+    jpeg.width = 0;
+    jpeg.height = 0;
+    jpeg.input = src;
+    jpeg.poutput = out;
+    jpeg.data_offset = 0;
+
+    if(esp_jpg_decode(src_len, (jpg_scale_t) scale, wc_jpg_read, wc_rgb565_write, (void*)&jpeg) != ESP_OK){
+        return false;
+    }
+    return true;
+}
+
+
 // general jpeg to pixel conversion
 // may be used for gettign pixels for other processing, e.g. tensorflow.
 // supports scaling (0-3 -> 1:1. 1:2, 1:4, 1:8)
 // supports pixelformats GRAYSCALE, RGB565, RGB888 (see define)
 // pass in a camera_fb_t * and a buffer will be allocated/re-allocated if ->len != size required
-bool convertJpegToPixels(const uint8_t *src_buf, size_t src_len, int width, int height, int scale, int format, void *out){
-  camera_fb_t *wc_fb = (camera_fb_t *) out;
+bool convertJpegToPixels(const uint8_t *src_buf, size_t src_len, int width, int height, int scale, int format, struct PICSTORE *out){
   int size = 0;
   width = width / (1<<scale);
   height = height / (1<<scale);
-  switch(format){
-    case PIXFORMAT_GRAYSCALE: size = width*height + 4; break;
-    case PIXFORMAT_RGB565: size = width*height*2 + 4; break;
-#ifdef WC_USE_RGB888_DECODE      
-    case PIXFORMAT_RGB888: size = width*height*3 + 4; break;
-#endif
-    default: return false;
-  }
-
-  if (wc_fb->len != size) {
-    free(wc_fb->buf);
-    wc_fb->buf = nullptr;
-  }
-  if (!wc_fb->buf){
-    wc_fb->buf = (uint8_t *)heap_caps_aligned_alloc(4, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  }
-  if (wc_fb->buf) {
-    wc_fb->len = size;
-    wc_fb->width = width;
-    wc_fb->height = height;
-    wc_fb->format = (pixformat_t)format;
-  } else {
-    wc_fb->len = 0;
+  bool allocated = pic_alloc(out, width, height, 0, format, 1);
+  if (!allocated){
     return false;
   }
 
   switch(format){
     case PIXFORMAT_GRAYSCALE:{ 
-      return jpg2mono(src_buf, src_len, wc_fb->buf, scale);
+      return wc_jpg2mono(src_buf, src_len, out, scale);
     } break;
+#ifdef WC_USE_RGB_DECODE      
     case PIXFORMAT_RGB565:{
-      return jpg2rgb565(src_buf, src_len, wc_fb->buf, (jpg_scale_t)scale);
+      return wc_jpg2rgb565(src_buf, src_len, out, scale);
     } break;
-#ifdef WC_USE_RGB888_DECODE      
     case PIXFORMAT_RGB888:{
-      return wc_jpg2rgb888(src_buf, src_len, wc_fb->buf, scale);
+      return wc_jpg2rgb888(src_buf, src_len, out, scale);
     } break;
 #endif
     default: return false;
@@ -1771,10 +1949,10 @@ void WcAutoMask(){
   int swscaley = (1<<wc_motion.swscale);
   int scaledheight = height/swscaley;
 
-  if (!wc_motion.diff_buffer || !wc_motion.mask_buffer) return;
+  if (!wc_motion.diff || !wc_motion.mask) return;
 
-  uint8_t *pxdy = wc_motion.diff_buffer;
-  uint8_t *pxmy = wc_motion.mask_buffer;
+  uint8_t *pxdy = wc_motion.diff->buff;
+  uint8_t *pxmy = wc_motion.mask->buff;
   uint8_t thresh = wc_motion.auto_mask_pixel_threshold;
   int expansion = wc_motion.auto_mask_pixel_expansion;
   int stride = scaledwidth;
@@ -1821,97 +1999,90 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
   int scaledpixelcount = scaledwidth*scaledheight;
 
   // if the frame changed size, reallocate
-  uint32_t frame_buffer_len = (pixelcount)+4;
   uint32_t last_motion_buffer_len = (scaledpixelcount) + 4;
 
   bool newbuffers = false;
-  if ((wc_motion.enable_diffbuff && !wc_motion.diff_buffer) ||
-      (!wc_motion.enable_diffbuff && wc_motion.diff_buffer) ||
-      (wc_motion.required_motion_buffer_len != last_motion_buffer_len)){
+
+  if (!wc_motion.last_motion){
+    AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: first motion buf?"));
+    newbuffers = true;
+  } else {
+    if (last_motion_buffer_len != wc_motion.last_motion->len) {
+      AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: motion buf size change now %d"), last_motion_buffer_len);
+      newbuffers = true;
+    }
+  }
+
+  // if diff enable changed
+  if ((wc_motion.enable_diffbuff && !wc_motion.diff) ||
+      (!wc_motion.enable_diffbuff && wc_motion.diff)){
+    AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: diff enable now %d"), wc_motion.enable_diffbuff);
+    newbuffers = true;
+  }
+  
+  if ((wc_motion.enable_backgroundbuff && !wc_motion.background) ||
+      (!wc_motion.enable_backgroundbuff && wc_motion.background)){
+    AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: background enable now %d"), wc_motion.enable_backgroundbuff);
     newbuffers = true;
   }
 
-  if ((wc_motion.enable_backgroundbuff && !wc_motion.backgroundbuff) ||
-      (!wc_motion.enable_backgroundbuff && wc_motion.backgroundbuff) ||
-      (wc_motion.backgroundbuff_len != last_motion_buffer_len)){
+  if ((wc_motion.enable_mask && !wc_motion.mask) ||
+      (!wc_motion.enable_mask && wc_motion.mask)){
+    AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: mask enable now %d"), wc_motion.enable_mask);
     newbuffers = true;
   }
-
-  if (wc_motion.mask_buffer && wc_motion.mask_buffer_len != last_motion_buffer_len){
-    AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: freeing mask buffer: len mismatch - %d != %d"), wc_motion.mask_buffer_len, last_motion_buffer_len);
-    // if the mask buffer is the wrong size, just free it with error
-    free(wc_motion.mask_buffer);
-    wc_motion.mask_buffer = nullptr;
-    wc_motion.mask_buffer_len = 0;
-  } 
 
   // detect change in scale and swscale as well as frame size in
   if (newbuffers){
-  // create and keep a frame buffers.
+    AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: motion - realloc"));
+    // create and keep a frame buffers.
     wc_motion.required_motion_buffer_len = last_motion_buffer_len;
     wc_motion.motion_state = 0;  // prevent set of output to stop bad detect at start
     wc_motion.scaledwidth = scaledwidth;
     wc_motion.scaledheight = scaledheight;
-    // free existing - e.g. on size change
-    if (wc_motion.frame_buffer){
-      free(wc_motion.frame_buffer);
-      wc_motion.frame_buffer = nullptr;
-      wc_motion.frame_buffer_len = 0;
+    
+    // allocate or keep if len still correct
+    pic_alloc_p(&wc_motion.frame, width, height, 0, PIXFORMAT_GRAYSCALE, WC_ALLOC_ALWAYS);
+    if (!wc_motion.frame || !wc_motion.frame->allocatedLen) {
+      AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: no allocate frame"));
+      pic_free_p(&wc_motion.frame);
     }
-    if (wc_motion.last_motion_buffer){
-      free(wc_motion.last_motion_buffer);
-      wc_motion.last_motion_buffer = nullptr;
-      wc_motion.last_motion_buffer_len = 0;
+    pic_alloc_p(&wc_motion.last_motion, scaledwidth, scaledheight, 0, PIXFORMAT_GRAYSCALE, WC_ALLOC_ALWAYS);
+    if (!wc_motion.last_motion || !wc_motion.last_motion->allocatedLen) {
+      AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: no allocate last_motion"));
+      pic_free_p(&wc_motion.last_motion);
     }
-    // optional diff buffer
-    if (wc_motion.diff_buffer){
-      free(wc_motion.diff_buffer);
-      wc_motion.diff_buffer = nullptr;
-      wc_motion.diff_buffer_len = 0;
-    }
-    // optional diff buffer
-    if (wc_motion.backgroundbuff){
-      free(wc_motion.backgroundbuff);
-      wc_motion.backgroundbuff = nullptr;
-      wc_motion.backgroundbuff_len = 0;
-    }
-
-    wc_motion.frame_buffer = (uint8_t *)heap_caps_aligned_alloc(4, frame_buffer_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (wc_motion.frame_buffer){
-      wc_motion.frame_buffer_len = frame_buffer_len;
-      AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: motion: new frame buffer of %d"), frame_buffer_len);
-      wc_motion.last_motion_buffer = (uint8_t *)heap_caps_aligned_alloc(4, last_motion_buffer_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-      if (wc_motion.last_motion_buffer){
-        wc_motion.last_motion_buffer_len = last_motion_buffer_len;
-        AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: motion: new motion buffer of %d"), last_motion_buffer_len);
-        if (wc_motion.enable_diffbuff){
-          wc_motion.diff_buffer = (uint8_t *)heap_caps_aligned_alloc(4, last_motion_buffer_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-          if (wc_motion.diff_buffer){
-            wc_motion.diff_buffer_len = last_motion_buffer_len;
-            AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: motion: new diff buffer of %d"), last_motion_buffer_len);
-          } else {
-            AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: unable to allocate diff buffer of %d"), frame_buffer_len);
-          }
-        }
-        if (wc_motion.enable_backgroundbuff){
-          wc_motion.backgroundbuff = (uint8_t *)heap_caps_aligned_alloc(4, last_motion_buffer_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-          if (wc_motion.backgroundbuff){
-            wc_motion.backgroundbuff_len = last_motion_buffer_len;
-            AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: motion: new background buffer of %d"), last_motion_buffer_len);
-          } else {
-            AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: unable to allocate background buffer of %d"), frame_buffer_len);
-          }
-        }
-      } else {
-        AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: unable to allocate motion buffer of %d"), frame_buffer_len);
+    if (wc_motion.enable_diffbuff){
+      pic_alloc_p(&wc_motion.diff, scaledwidth, scaledheight, 0, PIXFORMAT_GRAYSCALE, WC_ALLOC_ALWAYS);
+      if (!wc_motion.diff || !wc_motion.diff->allocatedLen) {
+        AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: no allocate diff"));
+        pic_free_p(&wc_motion.diff);
       }
     } else {
-      AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: unable to allocate frame buffer of %d"), frame_buffer_len);
+      pic_free_p(&wc_motion.diff);
+    }
+    if (wc_motion.enable_backgroundbuff){
+      pic_alloc_p(&wc_motion.background, scaledwidth, scaledheight, 0, PIXFORMAT_GRAYSCALE, WC_ALLOC_ALWAYS);
+      if (!wc_motion.background || !wc_motion.background->allocatedLen) {
+        AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: no allocate background"));
+        pic_free_p(&wc_motion.background);
+      }
+    } else {
+      pic_free_p(&wc_motion.background);
+    }
+    if (wc_motion.enable_mask){
+      pic_alloc_p(&wc_motion.mask, scaledwidth, scaledheight, 0, PIXFORMAT_GRAYSCALE, WC_ALLOC_ALWAYS);
+      if (!wc_motion.mask || !wc_motion.mask->allocatedLen) {
+        AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: no allocate mask"));
+        pic_free_p(&wc_motion.mask);
+      }
+    } else {
+      pic_free_p(&wc_motion.mask);
     }
   }
 
   // every time, not just on allocation failure
-  if (!wc_motion.frame_buffer || !wc_motion.last_motion_buffer) {
+  if (!wc_motion.frame || !wc_motion.last_motion) {
     // indicate failure
     wc_motion.motion_trigger = 0;
     wc_motion.motion_brightness = 0;
@@ -1922,7 +2093,6 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
 
   // enable us to call with null just to allocate buffers
   if (!_jpg_buf){
-    // indicate failure
     return;
   }
 
@@ -1933,7 +2103,9 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
 
   /*JPG_SCALE_NONE,    JPG_SCALE_2X,    JPG_SCALE_4X,    JPG_SCALE_8X,*/
   int scale = wc_motion.scale;
-  jpegres = jpg2mono(_jpg_buf, _jpg_buf_len, wc_motion.frame_buffer, scale);
+  // convert the input jpeg (full size)
+  // to a mono using jpeg decoder scaling to save memory
+  jpegres = wc_jpg2mono(_jpg_buf, _jpg_buf_len, wc_motion.frame, scale);
   if (!jpegres){
     AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: jpeg decode failure"));
     wc_motion.motion_trigger = 0;
@@ -1942,34 +2114,35 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
     wc_motion.motion_processed = 1;
     return;
   }
-  uint32_t x, y;
-  uint8_t *pxiy = wc_motion.frame_buffer;
-  uint8_t *pxry = wc_motion.last_motion_buffer;
 
-  // difference buffer - may be nullptr unless enabled
-  uint8_t *pxdy = wc_motion.diff_buffer;
-  uint8_t *pxby = wc_motion.backgroundbuff;
-  // convert to bw
+  // setup pixel pointers
+  uint8_t *pxiy = wc_motion.frame->buff;
+  uint8_t *pxry = wc_motion.last_motion->buff;
 
-  //uint64_t accu = 0;
-  //uint64_t bright = 0;
+  // optional difference buffer - may be nullptr unless enabled
+  uint8_t *pxdy = nullptr;
+  if (wc_motion.diff && wc_motion.diff->buff) pxdy = wc_motion.diff->buff;
+  // optional backkground buffer - may be nullptr unless enabled
+  uint8_t *pxby = nullptr;
+  if (wc_motion.background && wc_motion.background->buff) pxdy = wc_motion.background->buff;
+  // optional mask buffer - may be nullptr unless enabled
+  uint8_t *pxmy = nullptr;
+  if (wc_motion.mask && wc_motion.mask->buff) pxmy = wc_motion.mask->buff;
+
   // uint32 will handle up to 4096x4096x8bit
   uint32_t accu = 0;
   uint32_t bright = 0;
   uint8_t thresh = wc_motion.pixelThreshold;
   uint32_t changedPixelCount = 0;
 
-  // mask buffer - may be nullptr unless specifically set
-  uint8_t *pxmy = wc_motion.mask_buffer;
-
   // for unscaled, a simple loop over total length, maybe marginally faster
-  if (wc_motion.frame_buffer_len == wc_motion.last_motion_buffer_len){
+  if (wc_motion.frame->len == wc_motion.last_motion->len){
     uint8_t *pxi = pxiy;
     uint8_t *pxr = pxry;
     uint8_t *pxd = pxdy; // may be nullptr;
     uint8_t *pxb = pxby; // may be nullptr;
     uint8_t *pxm = pxmy; // may be nullptr;
-    for (int i = 0; i < wc_motion.frame_buffer_len; i++){
+    for (int i = 0; i < wc_motion.frame->len; i++){
       // if we have a mask, and the mask pixel value > 20, then ignore this pixel
       uint8_t gray = *pxi;
       if (pxm && (*pxm > 20)) {
@@ -2011,6 +2184,7 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
       bright += gray;
     }
   } else {
+    uint32_t x, y;
     // for softare scaled, a silightly more complex loop.
     int xincrement = swscalex;
     int yincrement = swscaley;
@@ -2070,6 +2244,7 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
     }
   }
 
+  // we only capture background once when asked to by this flag
   wc_motion.capture_background = 0;
 
   // when scaledpixelcount is < 100, float becomes necessary
@@ -2097,7 +2272,7 @@ void WcDetectMotionFn(uint8_t *_jpg_buf, int _jpg_buf_len){
   // trigger Berry calling webcam.motion if it exists
   wc_motion.motion_processed = 1;
 
-  if (wc_motion.auto_mask > 0){
+  if (wc_motion.enable_mask && wc_motion.auto_mask > 0){
     WcAutoMask();
     wc_motion.auto_mask--;
     AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: motion: auto_mask %d"), wc_motion.auto_mask);
@@ -2275,8 +2450,8 @@ static void WCOperationTask(void *pvParameters){
               if (wc_fb->format != PIXFORMAT_JPEG) {
                 // note - don't free the jpeg, we re-use it.
                 jpeg_converted = WcencodeToJpeg(wc_fb->buf, wc_fb->len, wc_fb->width, wc_fb->height, (int)wc_fb->format, 80, &VideoJpeg);
-                _jpg_buf_len = VideoJpeg.fb_len;
-                _jpg_buf = VideoJpeg.fb_buf;
+                _jpg_buf_len = VideoJpeg.len;
+                _jpg_buf = VideoJpeg.buff;
 
                 // this function is incredibly expensive - always allocates 128kbytes
                 //jpeg_converted = frame2jpg(wc_fb, 80, &_jpg_buf, &_jpg_buf_len);
@@ -2303,13 +2478,8 @@ static void WCOperationTask(void *pvParameters){
                 // we use -1 to just detect that Wc.width/height should have been set
                 if (Wc.taskTakePic){
                   if (Wc.taskTakePic > 0){
-                    if (Wc.snapshotStore.buff) free(Wc.snapshotStore.buff);
-                    Wc.snapshotStore.buff = (uint8_t *)heap_caps_aligned_alloc(4, _jpg_buf_len+4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                    if (Wc.snapshotStore.buff) {
+                    if (pic_alloc(&Wc.snapshotStore, 0, 0, _jpg_buf_len, PIXFORMAT_JPEG, 1)){
                       memcpy(Wc.snapshotStore.buff, _jpg_buf, _jpg_buf_len);
-                      Wc.snapshotStore.len = _jpg_buf_len;
-                    } else {
-                      Wc.snapshotStore.len = 0;
                     }
                   }
                   Wc.taskTakePic = 0;
@@ -2385,28 +2555,24 @@ static void WCOperationTask(void *pvParameters){
                           // only for frames where motion is being detected,
                           // e.g. once per sec
                           if (detectMotion){
-                            uint8_t *rawsrc = wc_motion.diff_buffer;
-                            int rawlen = wc_motion.diff_buffer_len;
-                            if (!rawsrc){
-                              rawsrc = wc_motion.last_motion_buffer;
-                              rawlen = wc_motion.last_motion_buffer_len;
+                            struct PICSTORE *ps = nullptr;
+                            // by default, we send the diff buffer if present
+                            if (wc_motion.diff && wc_motion.diff->buff){
+                              ps = wc_motion.diff;
                             }
-                            if (rawsrc){
-                              camera_fb_t fb;
-                              fb.width = wc_motion.scaledwidth;
-                              fb.height = wc_motion.scaledheight;
-                              fb.format = PIXFORMAT_GRAYSCALE;
-                              fb.buf = rawsrc;              /*!< Pointer to the pixel data */
-                              fb.len = rawlen;                 /*!< Length of the buffer in bytes */
-                              
+                            if (!ps){
+                              // else we send the motion buffer (mono of video, but slower)
+                              if (wc_motion.last_motion && wc_motion.last_motion->buff){
+                                ps = wc_motion.last_motion;
+                              }
+                            }
+                            if (ps){
                               // use a malloc that we don't free to save memory creep
                               // it is re-mallcoed if the frame does not fit.
-                              bool conv = WcencodeToJpeg(rawsrc, rawlen, wc_motion.scaledwidth, wc_motion.scaledheight, (int)PIXFORMAT_GRAYSCALE, 80, &OurOneJpeg);
+                              bool conv = WcencodeToJpeg(ps->buff, ps->len, ps->width, ps->height, (int)ps->format, 80, &OurOneJpeg);
 
-                              diff_jpg_buf_len = OurOneJpeg.fb_len;
-                              diff_jpg_buf = OurOneJpeg.fb_buf;
-
-                              //bool conv = frame2jpg(&fb, 80, &diff_jpg_buf, &diff_jpg_buf_len);
+                              diff_jpg_buf_len = OurOneJpeg.len;
+                              diff_jpg_buf = OurOneJpeg.buff;
 
                               if (conv && diff_jpg_buf_len){
                                 src = diff_jpg_buf;
@@ -2808,6 +2974,7 @@ void WcInit(void) {
 
 #define D_CMND_WC_SETOPTIONS "SetOptions"
 #define D_CMND_WC_CONVERTFRAME "ConvertFrame"
+#define D_CMND_WC_SETPICTURE "SetPicture"
 
 #define D_CMND_WC_POWEROFF "Poweroff"
 
@@ -2822,7 +2989,7 @@ const char kWCCommands[] PROGMEM =  D_PRFX_WEBCAM "|"  // Prefix
   D_CMND_WC_STARTTASK "|" D_CMND_WC_STOPTASK "|" D_CMND_WC_MENUVIDEOOFF "|" D_CMND_WC_MENUVIDEOON "|" 
   D_CMND_WC_INTERRUPT "|" D_CMND_WC_SETMOTIONDETECT "|" D_CMND_WC_GETFRAME "|" D_CMND_WC_GETPICSTORE "|" 
   D_CMND_WC_BERRYFRAMES  "|" D_CMND_WC_SAVEPIC "|" D_CMND_WC_APPENDPIC  "|" D_CMND_WC_GETMOTIONPIXELS "|"
-  D_CMND_WC_SETOPTIONS "|" D_CMND_WC_CONVERTFRAME "|" D_CMND_WC_POWEROFF
+  D_CMND_WC_SETOPTIONS "|" D_CMND_WC_CONVERTFRAME "|" D_CMND_WC_SETPICTURE "|" D_CMND_WC_POWEROFF
 
 #ifdef ENABLE_RTSPSERVER
   "|" D_CMND_RTSP
@@ -2842,7 +3009,7 @@ void (* const WCCommand[])(void) PROGMEM = {
   &CmndWebcamBerryFrames,
   &CmdWebcamSavePic, &CmdWebcamAppendPic,
   &CmndWebcamGetMotionPixels, &CmndWebcamSetOptions,
-  &CmndWebcamConvertFrame,
+  &CmndWebcamConvertFrame, &CmndWebcamSetPicture,
   &CmndWebcamPowerOff
 
 #ifdef ENABLE_RTSPSERVER
@@ -2904,8 +3071,7 @@ void CmndWebcamConvertFrame(void){
   int bnum = XdrvMailbox.index;
   // bnum is 1-4
   if (!XdrvMailbox.data_len || (bnum < 1) || (bnum > MAX_PICSTORE)){
-    ResponseCmndError();
-    return;
+    ResponseCmndError(); return;
   }
   char tmp[20];
   strncpy(tmp, XdrvMailbox.data, 10);
@@ -2917,13 +3083,91 @@ void CmndWebcamConvertFrame(void){
   if (arg){
     scale = atoi(arg);
   }
-  
+
+  if (!format){
+    format = PIXFORMAT_JPEG;
+  } else {
+    format--;
+  }
+  if (!wc_check_format(format)){
+    AddLog(LOG_LEVEL_ERROR, PSTR("CAM: Invalid format %d"), format+1);
+    ResponseCmndError(); return;
+  }
+  struct PICSTORE *ps = &Wc.picstore[bnum];
+  if (!ps->buff){
+    AddLog(LOG_LEVEL_ERROR, PSTR("CAM: No pic at %d"), bnum);
+    ResponseCmndError(); return;
+  }
+  if (ps->format != PIXFORMAT_JPEG && format != PIXFORMAT_JPEG){
+    AddLog(LOG_LEVEL_ERROR, PSTR("CAM: ConvertFrame only go to or from JPEG"));
+    ResponseCmndError(); return;
+  }
+
   // takes INDEX into store
   bool res = WcConvertFrame(bnum-1, format, scale);
   res? ResponseCmndDone(): ResponseCmndError();
   return;
 }
 
+// Allows Berry to send native address, len, format, optional width, height
+// "addr len format [width height]"
+// give it a bad address, and it WILL die.
+void CmndWebcamSetPicture(void){
+  int bnum = XdrvMailbox.index;
+  if (!XdrvMailbox.data_len || bnum < 1 || bnum > MAX_PICSTORE) {
+    ResponseCmndError();
+    return;
+  }
+  struct PICSTORE *p = &Wc.picstore[bnum];
+
+  char tmp[100];
+  strncpy(tmp, XdrvMailbox.data, 99);
+  // "addr len format [width height]"
+  // width/height if format not PIXFORMAT_JPEG=0/5
+  // allowed formats 
+  int format = 0;
+  uint32_t addr = 0;
+  int len = 0;
+  int height = 0;
+  int width = 0;
+
+  int res = sscanf(tmp, "%u %d %d %d %d",
+    &addr, &len, &format, &height, &width);
+
+  if (!format){
+    format = PIXFORMAT_JPEG;
+  } else {
+    format--;
+  }
+
+  if (res < 2){
+    AddLog(LOG_LEVEL_ERROR, PSTR("CAM: SetPicture expects 'addr len format [width height]'"));
+    ResponseCmndError(); return;
+  }
+  if (!wc_check_format(format)){
+    AddLog(LOG_LEVEL_ERROR, PSTR("CAM: Invalid format %d"), format+1);
+    ResponseCmndError(); return;
+  }
+  if (format != PIXFORMAT_JPEG && (!width || !height)){
+    AddLog(LOG_LEVEL_ERROR, PSTR("CAM: SetPicture: format %d needs width and height"), format+1);
+    ResponseCmndError(); return;
+  }
+
+  bool allocres = pic_alloc(p, width, height, len, format, 1);
+  if (!allocres){
+    AddLog(LOG_LEVEL_ERROR, PSTR("CAM: SetPicture alloc failed"));
+    ResponseCmndError();
+    return;
+  }
+
+  // don't over copy if someone screws up height/width/size calc
+  // also, our buffer MAY have more space than required...
+  int copylen = (len < p->allocatedLen)?len:p->allocatedLen;
+  // copy Berry data.  We can't free it, and Berry will
+  memcpy(p->buff, (void *)addr, copylen);
+  ResponseCmndDone();
+  return;
+}
 
 void CmndWebcamStartTask(void) {
   if (Wc.taskRunning == 0){
@@ -2998,7 +3242,7 @@ void CmndWebcamSetMotionDetect(void) {
       int auto_mask_pixel_expansion = 4;
 
       if (0 == XdrvMailbox.data_len) {
-        res = wc_motion.mask_buffer? 1:0;
+        res = wc_motion.enable_mask? 1:0;
         break;
       } else {
         char tmp[40];
@@ -3017,33 +3261,23 @@ void CmndWebcamSetMotionDetect(void) {
       }
 
       if (!auto_mask_count){
-        if (wc_motion.mask_buffer){  
-          TasAutoMutex localmutex(&WebcamMutex, "setMotionDetect", 30000);
-          free(wc_motion.mask_buffer);
-          wc_motion.mask_buffer_len = 0;
-        }
+        wc_motion.enable_mask = 0;
         res = 0;
         break;
       }
-      if (wc_motion.mask_buffer){
-        memset(wc_motion.mask_buffer, 0, wc_motion.mask_buffer_len);
-      } else {
+      if (!wc_motion.enable_mask){
         TasAutoMutex localmutex(&WebcamMutex, "setMotionDetect", 30000);
         // force buffer allocation/length calc
         if (auto_mask_count > 1){
+          wc_motion.enable_mask = 1;
           wc_motion.enable_diffbuff = 1; // enable the diff buff, we use if for automask
         }
+        // force buffer allocation now
         WcDetectMotionFn(nullptr, 0);
-        if (wc_motion.last_motion_buffer_len){
-          wc_motion.mask_buffer = (uint8_t *)heap_caps_aligned_alloc(4, wc_motion.last_motion_buffer_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-          if (wc_motion.mask_buffer){
-            wc_motion.mask_buffer_len = wc_motion.last_motion_buffer_len;
-            AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: motion: new mask buffer of %d"), wc_motion.mask_buffer_len);
-          }
-        }
       }
-      if (wc_motion.mask_buffer){
-        memset(wc_motion.mask_buffer, 0, wc_motion.mask_buffer_len);
+
+      if (wc_motion.mask && wc_motion.mask->buff){
+        memset(wc_motion.mask->buff, 0, wc_motion.mask->len);
         if (XdrvMailbox.payload > 1){
           // if 2+, then represents count of motion detects to make mask from
           wc_motion.auto_mask = auto_mask_count; 
@@ -3052,7 +3286,7 @@ void CmndWebcamSetMotionDetect(void) {
         }
         res = auto_mask_count;
       } else {
-        AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: unable to allocate mask buffer of %d"), wc_motion.last_motion_buffer_len);
+        AddLog(LOG_LEVEL_ERROR, PSTR("CAM: motion: unable to allocate mask buffer"));
         res = 0;
       }
     } break;
@@ -3127,20 +3361,20 @@ void CmndWebcamGetMotionPixels(void) {
   int len = 0;
   switch (XdrvMailbox.index){
     case 1:{
-      t = wc_motion.last_motion_buffer;
-      len = wc_motion.last_motion_buffer_len;
+      t = wc_motion.last_motion?wc_motion.last_motion->buff: nullptr;
+      len = wc_motion.last_motion?wc_motion.last_motion->len: 0;
     } break;
     case 2:{ // optional diff buffer
-      t = wc_motion.diff_buffer;
-      len = wc_motion.diff_buffer_len;
+      t = wc_motion.diff?wc_motion.diff->buff: nullptr;
+      len = wc_motion.diff?wc_motion.diff->len: 0;
     } break;
     case 3:{ // optional mask buffer
-      t = wc_motion.mask_buffer;
-      len = wc_motion.mask_buffer_len;
+      t = wc_motion.mask?wc_motion.mask->buff: nullptr;
+      len = wc_motion.mask?wc_motion.mask->len: 0;
     } break;
     case 4:{ // optional background buffer
-      t = wc_motion.backgroundbuff;
-      len = wc_motion.backgroundbuff_len;
+      t = wc_motion.background?wc_motion.background->buff: nullptr;
+      len = wc_motion.background?wc_motion.background->len: 0;
     } break;
   }
   char resp[50] = "0";
@@ -3205,26 +3439,25 @@ int WebcamSavePic(int append) {
   }
   if (len){
 #ifdef USE_UFILESYS
-    File f = ufsp->open(XdrvMailbox.data, append?FS_FILE_APPEND:FS_FILE_WRITE); //
-    if (f){
-      f.write(buf, len);
-      f.close();
-      AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: Save Pic %s"), XdrvMailbox.data);
-      if (bnum == 0){
-        free(Wc.snapshotStore.buff);
-        Wc.snapshotStore.buff = nullptr;
-        Wc.snapshotStore.len = 0;
+    // ffsp should recognise /sd/ if sd card present
+    if (ffsp){
+      File f = ffsp->open(XdrvMailbox.data, append?FS_FILE_APPEND:FS_FILE_WRITE); //
+      if (f){
+        f.write(buf, len);
+        f.close();
+        AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: Save Pic %s"), XdrvMailbox.data);
+        if (bnum == 0){
+          pic_free(&Wc.snapshotStore);
+        }
+        return 1;
       }
-      return 1;
     }
     AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: Failed Save Pic %s"), XdrvMailbox.data);
 #else
     AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: Failed Save Pic %s - no USE_UFILESYS"), XdrvMailbox.data);
 #endif
     if (bnum == 0){
-      free(Wc.snapshotStore.buff);
-      Wc.snapshotStore.buff = nullptr;
-      Wc.snapshotStore.len = 0;
+      pic_free(&Wc.snapshotStore);
     }
     return 0;
   } 
@@ -3598,6 +3831,7 @@ bool Xdrv99(uint32_t function) {
       result = DecodeCommand(kWCCommands, WCCommand);
       break;
     case FUNC_PRE_INIT:
+      memset(&wc_motion, 0, sizeof(wc_motion));
       WcSetMotionDefaults();
       WcInit();
       break;
