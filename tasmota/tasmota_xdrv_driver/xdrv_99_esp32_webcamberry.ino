@@ -90,11 +90,12 @@ As soon as the screenshare ended, back to 53fps at 30mhz clock.
  * WcInit         = Init Camera Interface
  * WcRtsp         = Control RTSP Server, 0=disable, 1=enable (forces restart) (if defined ENABLE_RTSPSERVER)
 
- * WcGetframeN    = read a picture from camera and store in slot N
+ * WcGetframeN    = read a picture from camera and store in slot N - return {"addr":123456,"len":12345,"w":160,"h":120, "format":5}
  * WcSavepicN     = save a picture 1-4 after WcGetframe or WcSavepic0 to get frame 1 and save. argument is filename
  * WcAppendpicN   = append a picture 1-4 to a file after WcGetframe or WcSavepic0 to get frame 1 and save. argument is filename
- * WcGetpistoreN  = read buff, addr, len of a stored image, returns json (e.g. for berry)
- * WcGetmotionpixelsN = (N=1..4) read addr, len, w, h as JSON {"addr":123456,"len":12345,"w":160,"h":120} 
+ * WcGetpistoreN  = read buff, addr, len of a stored image, returns json (e.g. for berry) {"addr":123456,"len":12345,"w":160,"h":120, "format":5}
+ *    if N==0 take a picture to 1 first.
+ * WcGetmotionpixelsN = (N=1..4) read addr, len, w, h as JSON {"addr":123456,"len":12345,"w":160,"h":120, "format":4} 
  *    motion(1)
  *    difference(2) buffer - e.g for berry
  *    mask(3)
@@ -3067,6 +3068,7 @@ void CmndWebcamSetOptions(void){
   ResponseCmndNumber(res);
 }
 
+// NOTE input format is esp format + 1, and 0 -> jpeg
 void CmndWebcamConvertFrame(void){
   int bnum = XdrvMailbox.index;
   // bnum is 1-4
@@ -3084,6 +3086,7 @@ void CmndWebcamConvertFrame(void){
     scale = atoi(arg);
   }
 
+  // NOTE input format is esp format + 1, and 0 -> jpeg
   if (!format){
     format = PIXFORMAT_JPEG;
   } else {
@@ -3313,6 +3316,18 @@ void CmndWebcamGetFrame(void) {
   }
   if (bnum == 0) bnum = 1;
   uint32_t res = WcGetFrame(bnum);
+  struct PICSTORE *p = nullptr;
+  res = WcGetPicstorePtr(bnum-1, &p);
+  char resp[100] = "0";
+  if (p) {
+    snprintf_P(resp, sizeof(resp), PSTR("{\"buff\":%d,\"addr\":%d,\"len\":%d,\"w\":%d,\"h\":%d,\"format\":%d}"), 
+      bnum, p->buff, p->len, p->width, p->height, p->format+1);
+  } else {
+    snprintf_P(resp, sizeof(resp), PSTR("{\"maxstore\":%d}"), 
+      res);
+  }
+  Response_P(S_JSON_COMMAND_XVALUE, XdrvMailbox.command, resp);
+
   AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: Getframe %d -> %d"), bnum, res);
   ResponseCmndNumber((int)res);
 }
@@ -3339,7 +3354,7 @@ void CmndWebcamGetPicStore(void) {
   char resp[100] = "0";
   if (p) {
     snprintf_P(resp, sizeof(resp), PSTR("{\"buff\":%d,\"addr\":%d,\"len\":%d,\"w\":%d,\"h\":%d,\"format\":%d}"), 
-      bnum, p->buff, p->len, p->width, p->height, p->format);
+      bnum, p->buff, p->len, p->width, p->height, p->format+1);
   } else {
     snprintf_P(resp, sizeof(resp), PSTR("{\"maxstore\":%d}"), 
       res);
@@ -3359,28 +3374,34 @@ void CmndWebcamGetMotionPixels(void) {
 
   uint8_t *t = nullptr;
   int len = 0;
+  int format = 0;
   switch (XdrvMailbox.index){
     case 1:{
       t = wc_motion.last_motion?wc_motion.last_motion->buff: nullptr;
       len = wc_motion.last_motion?wc_motion.last_motion->len: 0;
+      format = wc_motion.last_motion?wc_motion.last_motion->format+1: 0;
     } break;
     case 2:{ // optional diff buffer
       t = wc_motion.diff?wc_motion.diff->buff: nullptr;
       len = wc_motion.diff?wc_motion.diff->len: 0;
+      format = wc_motion.diff?wc_motion.diff->format+1: 0;
     } break;
     case 3:{ // optional mask buffer
       t = wc_motion.mask?wc_motion.mask->buff: nullptr;
       len = wc_motion.mask?wc_motion.mask->len: 0;
+      format = wc_motion.mask?wc_motion.mask->format+1: 0;
     } break;
     case 4:{ // optional background buffer
       t = wc_motion.background?wc_motion.background->buff: nullptr;
       len = wc_motion.background?wc_motion.background->len: 0;
+      format = wc_motion.background?wc_motion.background->format+1: 0;
     } break;
   }
   char resp[50] = "0";
-  snprintf_P(resp, sizeof(resp), PSTR("{\"addr\":%d,\"len\":%d,\"w\":%d,\"h\":%d}"), 
+  snprintf_P(resp, sizeof(resp), PSTR("{\"addr\":%d,\"len\":%d,\"w\":%d,\"h\":%d, \"format\":%d}"), 
     t, len,
-    scaledwidth, scaledheight
+    scaledwidth, scaledheight,
+    format
     );
   Response_P(S_JSON_COMMAND_XVALUE, XdrvMailbox.command, resp);
 }
