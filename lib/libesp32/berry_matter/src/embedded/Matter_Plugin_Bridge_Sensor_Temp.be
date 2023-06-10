@@ -17,6 +17,8 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
+import matter
+
 # Matter plug-in for core behavior
 
 # dummy declaration for solidification
@@ -31,7 +33,7 @@ class Matter_Plugin_Bridge_Sensor_Temp : Matter_Plugin_Bridge_Sensor
   static var CLUSTERS  = {
     0x0402: [0,1,2,0xFFFC,0xFFFD],                  # Temperature Measurement p.97 - no writable
   }
-  static var TYPES = { 0x0302: 2, 0x0013: 1  }      # Temperature Sensor, rev 2
+  static var TYPES = { 0x0302: 2 }                  # Temperature Sensor, rev 2
 
   #############################################################
   # Called when the value changed compared to shadow value

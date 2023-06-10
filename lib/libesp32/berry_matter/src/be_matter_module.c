@@ -77,6 +77,17 @@ extern const bclass be_class_Matter_QRCode;
 
 #include "../generate/be_matter_clusters.h"
 #include "../generate/be_matter_opcodes.h"
+#include "../generate/be_matter_vendors.h"
+
+const char* matter_get_vendor_name(uint16_t id) {
+  for (const matter_vendor_t * vnd = matter_Vendors; vnd->id != 0xFFFF; vnd++) {
+    if (vnd->id == id) {
+      return vnd->name;
+    }
+  }
+  return NULL;
+}
+BE_FUNC_CTYPE_DECLARE(matter_get_vendor_name, "s", "i")
 
 const char* matter_get_cluster_name(uint16_t cluster) {
   for (const matter_cluster_t * cl = matterAllClusters; cl->id != 0xFFFF; cl++) {
@@ -189,6 +200,7 @@ extern const bclass be_class_Matter_TLV;   // need to declare it upfront because
 #include "../generate/be_matter_certs.h"
 
 #include "solidify/solidified_Matter_Plugin_Root.h"
+#include "solidify/solidified_Matter_Plugin_Aggregator.h"
 #include "solidify/solidified_Matter_Plugin_Device.h"
 #include "solidify/solidified_Matter_Plugin_OnOff.h"
 #include "solidify/solidified_Matter_Plugin_Light0.h"
@@ -215,6 +227,7 @@ extern const bclass be_class_Matter_TLV;   // need to declare it upfront because
 #include "solidify/solidified_Matter_Plugin_Bridge_Sensor_Illuminance.h"
 #include "solidify/solidified_Matter_Plugin_Bridge_Sensor_Humidity.h"
 #include "solidify/solidified_Matter_Plugin_Bridge_Sensor_Occupancy.h"
+#include "solidify/solidified_Matter_Plugin_Sensor_OnOff.h"
 
 /*********************************************************************************************\
  * Get a bytes() object of the certificate DAC/PAI_Cert
@@ -252,6 +265,7 @@ module matter (scope: global, strings: weak) {
   member, closure(matter_member_closure)
   get_ip_bytes, ctype_func(matter_get_ip_bytes)
 
+  get_vendor_name, ctype_func(matter_get_vendor_name)
   get_cluster_name, ctype_func(matter_get_cluster_name)
   get_attribute_name, ctype_func(matter_get_attribute_name)
   is_attribute_writable, ctype_func(matter_is_attribute_writable)
@@ -388,6 +402,7 @@ module matter (scope: global, strings: weak) {
 
   // Plugins
   Plugin_Root, class(be_class_Matter_Plugin_Root)       // Generic behavior common to all devices
+  Plugin_Aggregator, class(be_class_Matter_Plugin_Aggregator) // Aggregator
   Plugin_Device, class(be_class_Matter_Plugin_Device)   // Generic device (abstract)
   Plugin_OnOff, class(be_class_Matter_Plugin_OnOff)     // Relay/Light behavior (OnOff)
   Plugin_Light0, class(be_class_Matter_Plugin_Light0)     // OnOff Light
@@ -402,6 +417,7 @@ module matter (scope: global, strings: weak) {
   Plugin_Sensor_Illuminance, class(be_class_Matter_Plugin_Sensor_Illuminance) // Illuminance Sensor
   Plugin_Sensor_Humidity, class(be_class_Matter_Plugin_Sensor_Humidity)   // Humidity Sensor
   Plugin_Sensor_Occupancy, class(be_class_Matter_Plugin_Sensor_Occupancy)           // Occupancy Sensor
+  Plugin_Sensor_OnOff, class(be_class_Matter_Plugin_Sensor_OnOff)           // Simple OnOff Sensor
   Plugin_Bridge_HTTP, class(be_class_Matter_Plugin_Bridge_HTTP)     // HTTP bridge superclass
   Plugin_Bridge_OnOff, class(be_class_Matter_Plugin_Bridge_OnOff)     // HTTP Relay/Light behavior (OnOff)
   Plugin_Bridge_Light0, class(be_class_Matter_Plugin_Bridge_Light0)   // HTTP OnOff Light

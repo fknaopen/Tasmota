@@ -46,7 +46,7 @@ class be_class_webclient (scope: global, name: webclient) {
     .w, var
     init, func(wc_init)
     deinit, func(wc_deinit)
-    url_encode, func(wc_urlencode)
+    url_encode, static_func(wc_urlencode)
 
     begin, func(wc_begin)
     set_timeouts, func(wc_set_timeouts)

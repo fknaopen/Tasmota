@@ -17,6 +17,8 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
+import matter
+
 #@ solidify:Matter_HTTP_async,weak
 
 # dummy declaration for solidification
@@ -372,6 +374,12 @@ class Matter_HTTP_async : Matter_TCP_async
   #
   # Transaction finished sucessfully, result in self.payload
   def event_http_finished()   end
+  def event_closed()
+    if self.http_status == 0
+      self.http_status = 1
+      self.event_http_finished()
+    end
+  end
 
   #############################################################
   # event_http_failed
