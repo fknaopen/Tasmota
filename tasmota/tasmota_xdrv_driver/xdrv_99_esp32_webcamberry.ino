@@ -3397,30 +3397,12 @@ void CmndWebcamGetMotionPixels(void) {
       format = wc_motion.background?wc_motion.background->format+1: 0;
     } break;
   }
-  char resp[50] = "0";
+  char resp[100] = "0";
   snprintf_P(resp, sizeof(resp), PSTR("{\"addr\":%d,\"len\":%d,\"w\":%d,\"h\":%d, \"format\":%d}"), 
     t, len,
     scaledwidth, scaledheight,
-    format
+    format+1
     );
-  Response_P(S_JSON_COMMAND_XVALUE, XdrvMailbox.command, resp);
-}
-
-// todo - get raw pixels from camera.
-// we probably need to specify size/window?
-void CmndWebcamGetCamPixels(void) {
-  // NOTE: the buffers returned here are static unless the frame size or scale changes.
-  // use with care
-  uint8_t *t = nullptr;
-  int len = 0;
-  switch (XdrvMailbox.index){
-    case 1:{ // colour
-    } break;
-    case 2:{ // mono
-    } break;
-  }
-  char resp[50] = "0";
-  snprintf_P(resp, sizeof(resp), PSTR("{\"addr\":%d,\"len\":%d}"), t, len);
   Response_P(S_JSON_COMMAND_XVALUE, XdrvMailbox.command, resp);
 }
 
