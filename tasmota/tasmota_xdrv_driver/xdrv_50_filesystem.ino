@@ -18,6 +18,9 @@
 */
 
 #ifdef USE_UFILESYS
+#define UFILESYS_NONRECURSIVEFOLDERUI 1
+#define UFILESYS_SERVE_STATIC 1
+
 /*********************************************************************************************\
 This driver adds universal file system support for
 - ESP8266 (sd card or littlefs on  > 1 M devices with special linker file e.g. eagle.flash.4m2m.ld)
@@ -647,8 +650,8 @@ const char UFS_FORM_SDC_DIR_NORMAL[] PROGMEM =
   "";
 const char UFS_FORM_SDC_DIR_HIDDABLE[] PROGMEM =
   " class='hf'";
-const char UFS_FORM_SDC_DIRd[] PROGMEM =
-  "<pre><a href='%s' file='%s'>%s</a> folder %s</pre>";
+//const char UFS_FORM_SDC_DIRd[] PROGMEM =
+//  "<pre><a href='%s' file='%s'>%s</a> folder %s</pre>";
 const char UFS_FORM_SDC_DIRb[] PROGMEM =
   "<pre%s><a href='%s' file='%s'>%s</a> %s %8d %s %s</pre>";
 const char UFS_FORM_SDC_HREF[] PROGMEM =
@@ -657,7 +660,7 @@ const char UFS_FORM_SDC_HREF[] PROGMEM =
 #ifdef GUI_TRASH_FILE
 const char UFS_FORM_SDC_HREFdel[] PROGMEM =
   //"<a href=ufsd?delete=%s/%s>&#128465;</a>"; // 🗑️
-  "<a href='ufsd?%s=%s/%s' onclick=\"return confirm('" D_CONFIRM_FILE_DEL "')\">&#128293;</a>"; // 🔥
+  "<a href='ufsd?delete=%s/%s' onclick=\"return confirm('" D_CONFIRM_FILE_DEL "')\">&#128293;</a>"; // 🔥
 #endif // GUI_TRASH_FILE
 
 #ifdef GUI_EDIT_FILE
@@ -686,14 +689,18 @@ void UfsDirectory(void) {
   AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_HTTP D_MANAGE_FILE_SYSTEM));
 
   uint8_t depth = 0;
-  uint8_t recurse = 0;
 
   strcpy(ufs_path, "/");
 
   // request recurse into folders
+#ifdef UFILESYS_NONRECURSIVEFOLDERUI
+  uint8_t recurse = 0;
   if (Webserver->hasArg(F("recurse"))) {
     recurse = 1;
   }
+#else
+  uint8_t recurse = 1;
+#endif
 
   if (Webserver->hasArg(F("download"))) {
     String stmp = Webserver->arg(F("download"));
@@ -778,6 +785,8 @@ void UfsListDir(char *path, uint8_t depth, uint8_t recurse) {
   char name[48];
   char npath[128];
   char format[12];
+  String tstr;
+  const char *space = PSTR(" ");
 
   sprintf(format, PSTR("%%-%ds"), 24 - depth);
 
@@ -796,7 +805,11 @@ void UfsListDir(char *path, uint8_t depth, uint8_t recurse) {
           break;
         }
       }
-      WSContentSend_P(UFS_FORM_SDC_DIRd, npath, path, PSTR(".."), "");
+      sprintf(name, format, PSTR(".."));
+      tstr = "folder             ";
+      WSContentSend_P(UFS_FORM_SDC_DIRb, UFS_FORM_SDC_DIR_NORMAL, npath, path,
+                          HtmlEscape(name).c_str(), tstr.c_str(), 0, space, space);
+      //WSContentSend_P(UFS_FORM_SDC_DIRd, npath, path, PSTR(".."), "");
     }
     char *ep;
     while (true) {
@@ -813,7 +826,7 @@ void UfsListDir(char *path, uint8_t depth, uint8_t recurse) {
       }
 
       uint32_t tm = entry.getLastWrite();
-      String tstr = GetDT(tm);
+      tstr = GetDT(tm);
 
       char *pp = path;
       if (!*(pp + 1)) { pp++; }
@@ -832,36 +845,42 @@ void UfsListDir(char *path, uint8_t depth, uint8_t recurse) {
         const char* ppe = pp_escaped_string.c_str();    // this can't be merged on a single line otherwise the String object can be freed
         const char* epe = ep_escaped_string.c_str();
         sprintf(cp, format, ep);
+
 #ifdef GUI_TRASH_FILE
         char delpath[128];
-        ext_snprintf_P(delpath, sizeof(delpath), UFS_FORM_SDC_HREFdel, "delete", ppe, epe);
+        ext_snprintf_P(delpath, sizeof(delpath), UFS_FORM_SDC_HREFdel, ppe, epe);
 #else
         char delpath[2];
         delpath[0]=0;
 #endif // GUI_TRASH_FILE
+
+        ext_snprintf_P(npath, sizeof(npath), UFS_FORM_SDC_HREF, ppe, epe);
+
+#ifdef GUI_EDIT_FILE
+        char editpath[128];
+#else
+        char editpath[2];
+#endif
+        editpath[0]=0;
         if (entry.isDirectory()) {
-          ext_snprintf_P(npath, sizeof(npath), UFS_FORM_SDC_HREF, ppe, epe);
-          WSContentSend_P(UFS_FORM_SDC_DIRd, npath, ep, name, delpath);
-          uint8_t plen = strlen(path);
-          if (plen > 1) {
-            strcat(path, "/");
-          }
-          strcat(path, ep);
-          if (recurse){
-            UfsListDir(path, depth + 4, recurse);
-          }
-          path[plen] = 0;
+          tstr = "folder             ";
         } else {
-  #ifdef GUI_EDIT_FILE
-          char editpath[128];
+#ifdef GUI_EDIT_FILE
           ext_snprintf_P(editpath, sizeof(editpath), UFS_FORM_SDC_HREFedit, ppe, epe);
-  #else
-          char editpath[2];
-          editpath[0]=0;
-  #endif // GUI_TRASH_FILE
-          ext_snprintf_P(npath, sizeof(npath), UFS_FORM_SDC_HREF, ppe, epe);
-          WSContentSend_P(UFS_FORM_SDC_DIRb, hiddable ? UFS_FORM_SDC_DIR_HIDDABLE : UFS_FORM_SDC_DIR_NORMAL, npath, epe,
+#endif
+        }
+        WSContentSend_P(UFS_FORM_SDC_DIRb, hiddable ? UFS_FORM_SDC_DIR_HIDDABLE : UFS_FORM_SDC_DIR_NORMAL, npath, epe,
                           HtmlEscape(name).c_str(), tstr.c_str(), entry.size(), delpath, editpath);
+        if (entry.isDirectory()) {
+          if (recurse){
+            uint8_t plen = strlen(path);
+            if (plen > 1) {
+              strcat(path, "/");
+            }
+            strcat(path, ep);
+            UfsListDir(path, depth + 4, recurse);
+            path[plen] = 0;
+          }
         }
         entry.close();
       }
@@ -1185,6 +1204,9 @@ bool Xdrv50(uint32_t function) {
 #ifdef GUI_EDIT_FILE
       Webserver->on("/ufse", HTTP_GET, UfsEditor);
       Webserver->on("/ufse", HTTP_POST, UfsEditorUpload);
+#endif
+#ifdef UFILESYS_SERVE_STATIC
+      Webserver->serveStatic("/fs/", *ufsp, "/");
 #endif
       break;
 #endif // USE_WEBSERVER
