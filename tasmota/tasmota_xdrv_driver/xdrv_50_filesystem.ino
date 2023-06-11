@@ -405,8 +405,10 @@ bool TfsDeleteFile(const char *fname) {
   if (!ffs_type) { return false; }
 
   if (!ffsp->remove(fname)) {
-    AddLog(LOG_LEVEL_INFO, PSTR("TFS: Delete failed"));
-    return false;
+    if (!ffsp->rmdir(fname)) {
+      AddLog(LOG_LEVEL_INFO, PSTR("TFS: Delete failed"));
+      return false;
+    }
   }
   return true;
 }
@@ -646,7 +648,7 @@ const char UFS_FORM_SDC_DIR_NORMAL[] PROGMEM =
 const char UFS_FORM_SDC_DIR_HIDDABLE[] PROGMEM =
   " class='hf'";
 const char UFS_FORM_SDC_DIRd[] PROGMEM =
-  "<pre><a href='%s' file='%s'>%s</a></pre>";
+  "<pre><a href='%s' file='%s'>%s</a> folder %s</pre>";
 const char UFS_FORM_SDC_DIRb[] PROGMEM =
   "<pre%s><a href='%s' file='%s'>%s</a> %s %8d %s %s</pre>";
 const char UFS_FORM_SDC_HREF[] PROGMEM =
@@ -655,7 +657,7 @@ const char UFS_FORM_SDC_HREF[] PROGMEM =
 #ifdef GUI_TRASH_FILE
 const char UFS_FORM_SDC_HREFdel[] PROGMEM =
   //"<a href=ufsd?delete=%s/%s>&#128465;</a>"; // 🗑️
-  "<a href='ufsd?delete=%s/%s' onclick=\"return confirm('" D_CONFIRM_FILE_DEL "')\">&#128293;</a>"; // 🔥
+  "<a href='ufsd?%s=%s/%s' onclick=\"return confirm('" D_CONFIRM_FILE_DEL "')\">&#128293;</a>"; // 🔥
 #endif // GUI_TRASH_FILE
 
 #ifdef GUI_EDIT_FILE
@@ -684,8 +686,14 @@ void UfsDirectory(void) {
   AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_HTTP D_MANAGE_FILE_SYSTEM));
 
   uint8_t depth = 0;
+  uint8_t recurse = 0;
 
   strcpy(ufs_path, "/");
+
+  // request recurse into folders
+  if (Webserver->hasArg(F("recurse"))) {
+    recurse = 1;
+  }
 
   if (Webserver->hasArg(F("download"))) {
     String stmp = Webserver->arg(F("download"));
@@ -713,7 +721,10 @@ void UfsDirectory(void) {
   if (Webserver->hasArg(F("delete"))) {
     String stmp = Webserver->arg(F("delete"));
     char *cp = (char*)stmp.c_str();
-    dfsp->remove(cp);
+    if (!dfsp->remove(cp)){
+      // if delete failed, try to rmdir
+      dfsp->rmdir(cp);
+    }
   }
 
   WSContentStart_P(PSTR(D_MANAGE_FILE_SYSTEM));
@@ -735,7 +746,7 @@ void UfsDirectory(void) {
 
   WSContentSend_P(UFS_FORM_SDC_DIRa);
   if (ufs_type) {
-    UfsListDir(ufs_path, depth);
+    UfsListDir(ufs_path, depth, recurse);
   }
   WSContentSend_P(UFS_FORM_SDC_DIRc);
 #ifdef GUI_EDIT_FILE
@@ -763,10 +774,11 @@ bool isSDC(void) {
 #endif
 }
 
-void UfsListDir(char *path, uint8_t depth) {
+void UfsListDir(char *path, uint8_t depth, uint8_t recurse) {
   char name[48];
   char npath[128];
   char format[12];
+
   sprintf(format, PSTR("%%-%ds"), 24 - depth);
 
   File dir = dfsp->open(path, UFS_FILE_READ);
@@ -784,7 +796,7 @@ void UfsListDir(char *path, uint8_t depth) {
           break;
         }
       }
-      WSContentSend_P(UFS_FORM_SDC_DIRd, npath, path, PSTR(".."));
+      WSContentSend_P(UFS_FORM_SDC_DIRd, npath, path, PSTR(".."), "");
     }
     char *ep;
     while (true) {
@@ -820,24 +832,26 @@ void UfsListDir(char *path, uint8_t depth) {
         const char* ppe = pp_escaped_string.c_str();    // this can't be merged on a single line otherwise the String object can be freed
         const char* epe = ep_escaped_string.c_str();
         sprintf(cp, format, ep);
+#ifdef GUI_TRASH_FILE
+        char delpath[128];
+        ext_snprintf_P(delpath, sizeof(delpath), UFS_FORM_SDC_HREFdel, "delete", ppe, epe);
+#else
+        char delpath[2];
+        delpath[0]=0;
+#endif // GUI_TRASH_FILE
         if (entry.isDirectory()) {
           ext_snprintf_P(npath, sizeof(npath), UFS_FORM_SDC_HREF, ppe, epe);
-          WSContentSend_P(UFS_FORM_SDC_DIRd, npath, ep, name);
+          WSContentSend_P(UFS_FORM_SDC_DIRd, npath, ep, name, delpath);
           uint8_t plen = strlen(path);
           if (plen > 1) {
             strcat(path, "/");
           }
           strcat(path, ep);
-          UfsListDir(path, depth + 4);
+          if (recurse){
+            UfsListDir(path, depth + 4, recurse);
+          }
           path[plen] = 0;
         } else {
-  #ifdef GUI_TRASH_FILE
-          char delpath[128];
-          ext_snprintf_P(delpath, sizeof(delpath), UFS_FORM_SDC_HREFdel, ppe, epe);
-  #else
-          char delpath[2];
-          delpath[0]=0;
-  #endif // GUI_TRASH_FILE
   #ifdef GUI_EDIT_FILE
           char editpath[128];
           ext_snprintf_P(editpath, sizeof(editpath), UFS_FORM_SDC_HREFedit, ppe, epe);
