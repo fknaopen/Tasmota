@@ -982,7 +982,7 @@ uint32_t WcSetup(int32_t fsiz) {
     conf.mode = GPIO_MODE_OUTPUT;
     gpio_config(&conf);
 
-    int power_delay = 50;
+    int power_delay = 200;
     // if currently powered
     if (!gpio_get_level((gpio_num_t)config.pin_pwdn)){
       // power off for 200ms
@@ -1130,6 +1130,8 @@ int32_t WcSetOptions(uint32_t sel, int32_t value) {
       Wc.width = 0;
       Wc.height = 0;
       Wc.last_frame_len = 0;
+      Wc.frameIntervalsus = (uint32_t)(((float)nativeIntervals20ms[value]/((float)Settings->webcam_clk/20.0))*1000.0);
+      WcStats.maxfps = (uint32_t)((float)1000000.0/(float)Wc.frameIntervalsus);
 
       // WcFeature is lost on resolution change
       WcApplySettings();
@@ -3397,12 +3399,30 @@ void CmndWebcamGetMotionPixels(void) {
       format = wc_motion.background?wc_motion.background->format+1: 0;
     } break;
   }
-  char resp[100] = "0";
+  char resp[50] = "0";
   snprintf_P(resp, sizeof(resp), PSTR("{\"addr\":%d,\"len\":%d,\"w\":%d,\"h\":%d, \"format\":%d}"), 
     t, len,
     scaledwidth, scaledheight,
-    format+1
+    format
     );
+  Response_P(S_JSON_COMMAND_XVALUE, XdrvMailbox.command, resp);
+}
+
+// todo - get raw pixels from camera.
+// we probably need to specify size/window?
+void CmndWebcamGetCamPixels(void) {
+  // NOTE: the buffers returned here are static unless the frame size or scale changes.
+  // use with care
+  uint8_t *t = nullptr;
+  int len = 0;
+  switch (XdrvMailbox.index){
+    case 1:{ // colour
+    } break;
+    case 2:{ // mono
+    } break;
+  }
+  char resp[50] = "0";
+  snprintf_P(resp, sizeof(resp), PSTR("{\"addr\":%d,\"len\":%d}"), t, len);
   Response_P(S_JSON_COMMAND_XVALUE, XdrvMailbox.command, resp);
 }
 
