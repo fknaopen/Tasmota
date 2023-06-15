@@ -1046,10 +1046,15 @@ uint32_t WcSetup(int32_t fsiz) {
   // cannot hurt to retry...
   for (int i = 0; i < 3; i++){
     err = esp_camera_init(&config);
-
     if (err != ESP_OK) {
       AddLog(LOG_LEVEL_INFO, PSTR("CAM: InitErr 0x%x try %d"), err, (i+1));
       esp_camera_deinit();
+      if (err == 0x105){
+        // try a longer power off... and retry
+        // power off for 500ms
+        gpio_set_level((gpio_num_t)config.pin_pwdn, 1);
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+      }
     } else {
       if (i){
         AddLog(LOG_LEVEL_INFO, PSTR("CAM: InitOK try %d"), (i+1));
@@ -2703,8 +2708,8 @@ void WcLoop(void) {
     // NOTE: there is no 'retrigger hold off' time.
     if (wc_motion.motion_triggered){
 #ifdef USE_BERRY
-      char t[40];
-      snprintf(t, (size_t)39, "%d %d %d", wc_motion.motion_trigger, wc_motion.motion_brightness, wc_motion.changedPixelPertenthousand);
+      char t[80];
+      snprintf(t, (size_t)39, "{\"val\":%d,\"bri\":%d,\"pix\":%d}", wc_motion.motion_trigger, wc_motion.motion_brightness, wc_motion.changedPixelPertenthousand);
       callBerryEventDispatcher("webcam", "motion", 0, t, strlen(t));
 #endif
       AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: Motion Triggered"));
@@ -2714,7 +2719,7 @@ void WcLoop(void) {
     if (Wc.lenDiffTrigger){
 #ifdef USE_BERRY
       char t[40];
-      snprintf(t, (size_t)39, "%d", Wc.lenDiffTriggered);
+      snprintf(t, (size_t)39, "{\"diff\":%d}", Wc.lenDiffTriggered);
       callBerryEventDispatcher("webcam", "framesizechange", 0, t, strlen(t));
 #endif
       AddLog(LOG_LEVEL_DEBUG, PSTR("CAM: Framesize Change > %d = %d"), Wc.lenDiffLimit, Wc.lenDiffTriggered);
@@ -2725,7 +2730,9 @@ void WcLoop(void) {
     if (Wc.frame_processed){
 #ifdef USE_BERRY
       if (Wc.berryFrames){
-        callBerryEventDispatcher("webcam", "frame", 0, "", 0);
+        char t[80];
+        snprintf(t, (size_t)39, "{\"len\":%d}", Wc.last_frame_len);
+        callBerryEventDispatcher("webcam", "frame", 0, t, strlen(t));
       }
 #endif
       Wc.frame_processed = 0;
