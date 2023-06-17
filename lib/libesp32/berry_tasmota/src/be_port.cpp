@@ -106,10 +106,22 @@ extern "C" {
     // by reducing code repetition.
     int _m_path_action(bvm *vm, int8_t action){
 #ifdef USE_UFILESYS
+        // if this changes to not -1, we push it as a bool
+        int res = -1;
+        // this tells us to return the vm, not nil
+        int returnit = 0;
+
+        // comment out if nil return is OK to save some flash
+        switch (action){
+            case MPATH_EXISTS:
+            case MPATH_REMOVE:
+                res = 0;
+                break;
+        }
+
         if (be_top(vm) >= 1 && be_isstring(vm, 1)) {
             const char *path = be_tostring(vm, 1);
             if (path != nullptr) {
-                int8_t res = 0;
                 switch (action){
                     case MPATH_EXISTS:
                         res = be_isexist(path);
@@ -124,20 +136,22 @@ extern "C" {
                         res = zip_ufsp.mkdir(path);
                         break;
                     case MPATH_LISTDIR:
+                        be_newobject(vm, "list"); // add our list object and fall through
+                        returnit = 1;
                     case MPATH_ISDIR:
                     case MPATH_MODIFIED: {
-                        if (action == MPATH_LISTDIR){
-                            be_newobject(vm, "list");
-                        }
                         // listdir and isdir both need to open the file.
-                        File dir = ffsp->open(path, "r");
+
+                        // we use be_fopen because it pre-pends with '/'.
+                        // without this TAS fails to find stuff at boot...
+                        File *dir = (File *)be_fopen(path, "r");
                         if (dir) {
                             switch (action){
                                 case MPATH_LISTDIR:
                                     // fill out the list object
-                                    dir.rewindDirectory();
+                                    dir->rewindDirectory();
                                     while (1) {
-                                        File entry = dir.openNextFile();
+                                        File entry = dir->openNextFile();
                                         if (!entry) {
                                             break;
                                         }
@@ -148,17 +162,18 @@ extern "C" {
                                             be_pop(vm, 1);
                                         }
                                     }
-                                    be_pop(vm, 1);
                                     break;
                                 case MPATH_ISDIR:
                                     // push bool belowthe only one to push an int, so do it here.
-                                    res = dir.isDirectory();
+                                    res = dir->isDirectory();
                                     break;
                                 case MPATH_MODIFIED:
                                     // the only one to push an int, so do it here.
-                                    be_pushint(vm, dir.getLastWrite());
+                                    be_pushint(vm, dir->getLastWrite());
+                                    returnit = 1;
                                     break;
                             }
+                            be_fclose(dir);
                         }
                     } break;
                 }
@@ -166,32 +181,25 @@ extern "C" {
                 // these 
                 switch (action){
                     case MPATH_LISTDIR:
-                    case MPATH_MODIFIED:
-                        // these already pushed results
-                        break;
-                    case MPATH_EXISTS:
-                    case MPATH_REMOVE:
-                    case MPATH_RMDIR:
-                    case MPATH_MKDIR:
-                    case MPATH_ISDIR:
-                        // these need to push the bool result
-                        be_pushbool(vm, res);
+                        // if it was list, pop always
+                        be_pop(vm, 1);
                         break;
                 }
-                // function success (boolean or list return)
-                be_return(vm);
             } // invalid filename -> nil return
-        } // not a string, or no arg -> nil return
+        } // not a string, or no arg -> nil return unless see below
 
         // if we get here, and it was exists or remove, return false always
         // i.e. it's false for no filename or null filename.
-        switch (action){
-            case MPATH_EXISTS:
-            case MPATH_REMOVE:
-                be_pushbool(vm, 0);
-                be_return(vm);
-                break;
+
+        // if it was a boolean result
+        if (res != -1){
+            be_pushbool(vm, res);
+            returnit = 1;
         }
+        if (returnit){
+            be_return(vm);
+        }
+
 #endif // USE_UFILESYS
         be_return_nil(vm);
     }
