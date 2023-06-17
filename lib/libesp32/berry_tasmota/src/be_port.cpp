@@ -189,6 +189,7 @@ extern "C" {
             case MPATH_EXISTS:
             case MPATH_REMOVE:
                 be_pushbool(vm, 0);
+                be_return(vm);
                 break;
         }
 #endif // USE_UFILESYS
