@@ -98,69 +98,93 @@ BERRY_API void be_writebuffer(const char *buffer, size_t length)
     // be_fwrite(stdout, buffer, length);
 }
 
-
+// provides MPATH_ constants
+#include "be_port.h"
 extern "C" {
-    int m_path_listdir(bvm *vm)
-    {
+    // this combined action is called from be_path_tasmota_lib.c
+    // by using a single function, we save >200 bytes of flash
+    // by reducing code repetition.
+    int _m_path_action(bvm *vm, int8_t action){
 #ifdef USE_UFILESYS
         if (be_top(vm) >= 1 && be_isstring(vm, 1)) {
             const char *path = be_tostring(vm, 1);
-            be_newobject(vm, "list");
-
-            File dir = ffsp->open(path, "r");
-            if (dir) {
-                dir.rewindDirectory();
-                while (1) {
-                    File entry = dir.openNextFile();
-                    if (!entry) {
-                        break;
-                    }
-                    const char * fn = entry.name();
-                    if (strcmp(fn, ".") && strcmp(fn, "..")) {
-                        be_pushstring(vm, fn);
-                        be_data_push(vm, -2);
-                        be_pop(vm, 1);
-                    }
-
-                }
-            }
-            be_pop(vm, 1);
-            be_return(vm);
-
-        }
-#endif // USE_UFILESYS
-        be_return_nil(vm);
-    }
-
-    static int _m_path_mkdir_rmdir(bvm *vm, int remove) {
-#ifdef USE_UFILESYS
-        const char *path = NULL;
-        if (be_top(vm) >= 1 && be_isstring(vm, 1)) {
-            path = be_tostring(vm, 1);
-            int res = 0;
             if (path != nullptr) {
-                if (remove) 
-                    res = zip_ufsp.rmdir(path);
-                else
-                    res = zip_ufsp.mkdir(path);
-            }
-            be_pushbool(vm, res);
-        } else {
-            be_pushbool(vm, bfalse);
-        }
-        be_return(vm);
-#else // USE_UFILESYS
-        be_return_nil(vm);
+                int8_t res = 0;
+                switch (action){
+                    case MPATH_EXISTS:
+                        res = be_isexist(path);
+                        break;
+                    case MPATH_REMOVE:
+                        res = be_unlink(path);
+                        break;
+                    case MPATH_RMDIR:
+                        res = zip_ufsp.rmdir(path);
+                        break;
+                    case MPATH_MKDIR:
+                        res = zip_ufsp.mkdir(path);
+                        break;
+                    case MPATH_LISTDIR:
+                    case MPATH_ISDIR:
+                    case MPATH_MODIFIED: {
+                        if (action == MPATH_LISTDIR){
+                            be_newobject(vm, "list");
+                        }
+                        // listdir and isdir both need to open the file.
+                        File dir = ffsp->open(path, "r");
+                        if (dir) {
+                            switch (action){
+                                case MPATH_LISTDIR:
+                                    // fill out the list object
+                                    dir.rewindDirectory();
+                                    while (1) {
+                                        File entry = dir.openNextFile();
+                                        if (!entry) {
+                                            break;
+                                        }
+                                        const char * fn = entry.name();
+                                        if (strcmp(fn, ".") && strcmp(fn, "..")) {
+                                            be_pushstring(vm, fn);
+                                            be_data_push(vm, -2);
+                                            be_pop(vm, 1);
+                                        }
+                                    }
+                                    be_pop(vm, 1);
+                                    break;
+                                case MPATH_ISDIR:
+                                    // push bool belowthe only one to push an int, so do it here.
+                                    res = dir.isDirectory();
+                                    break;
+                                case MPATH_MODIFIED:
+                                    // the only one to push an int, so do it here.
+                                    be_pushint(vm, dir.getLastWrite());
+                                    break;
+                            }
+                        }
+                    } break;
+                }
+
+                // these 
+                switch (action){
+                    case MPATH_LISTDIR:
+                    case MPATH_MODIFIED:
+                        // these already pushed results
+                        break;
+                    case MPATH_EXISTS:
+                    case MPATH_REMOVE:
+                    case MPATH_RMDIR:
+                    case MPATH_MKDIR:
+                    case MPATH_ISDIR:
+                        // these need to push the bool result
+                        be_pushbool(vm, res);
+                        break;
+                }
+                // function success (boolean or list return)
+                be_return(vm);
+            } // invalid filename -> nil return
+        } // not a string, or no arg -> nil return
 #endif // USE_UFILESYS
+        be_return_nil(vm);
     }
-
-    int m_path_mkdir(bvm *vm) {
-        return _m_path_mkdir_rmdir(vm, 0);
-    }
-    int m_path_rmdir(bvm *vm) {
-        return _m_path_mkdir_rmdir(vm, 1);
-    }
-
 }
 
 BERRY_API char* be_readstring(char *buffer, size_t size)
