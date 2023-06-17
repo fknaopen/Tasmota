@@ -183,10 +183,13 @@ extern "C" {
             } // invalid filename -> nil return
         } // not a string, or no arg -> nil return
 
-        // if we get here, and it was exists, return false - 
+        // if we get here, and it was exists or remove, return false always
         // i.e. it's false for no filename or null filename.
-        if (action == MPATH_EXISTS){
-            be_pushbool(vm, 0);
+        switch (action){
+            case MPATH_EXISTS:
+            case MPATH_REMOVE:
+                be_pushbool(vm, 0);
+                break;
         }
 #endif // USE_UFILESYS
         be_return_nil(vm);
