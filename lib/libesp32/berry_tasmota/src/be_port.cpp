@@ -101,7 +101,6 @@ BERRY_API void be_writebuffer(const char *buffer, size_t length)
 // provides MPATH_ constants
 #include "be_port.h"
 extern "C" {
-#define BE_MAX_FILELIST_COUNT 25
     // this combined action is called from be_path_tasmota_lib.c
     // by using a single function, we save >200 bytes of flash
     // by reducing code repetition.
@@ -141,37 +140,25 @@ extern "C" {
                         returnit = 1;
                     case MPATH_ISDIR:
                     case MPATH_MODIFIED: {
-                        // listdir and isdir both need to open the file.
+                        //isdir needs to open the file, listdir does not
 
                         // we use be_fopen because it pre-pends with '/'.
                         // without this TAS fails to find stuff at boot...
                         File *dir = (File *)be_fopen(path, "r");
                         if (dir) {
+                            String fname;
                             switch (action){
-                                case MPATH_LISTDIR:{
-                                    int maxcount = BE_MAX_FILELIST_COUNT;
-                                    // fill out the list object
-                                    dir->rewindDirectory();
-                                    while (maxcount--) {
-                                        File entry = dir->openNextFile();
-                                        if (!entry) {
-                                            break;
-                                        }
-                                        const char * fn = entry.name();
-                                        if (strcmp(fn, ".") && strcmp(fn, "..")) {
-                                            be_pushstring(vm, fn);
-                                            be_data_push(vm, -2);
-                                            be_pop(vm, 1);
-                                        }
-                                        entry.close();
-                                    }
-                                    if (maxcount <= 0){
-                                        char *fn = "_more";
+                                case MPATH_LISTDIR:
+                                    dir->seekDir(0);
+                                    fname = dir->getNextFileName();
+                                    while (fname.length() != 0) {
+                                        const char * fn = fname.c_str();
                                         be_pushstring(vm, fn);
                                         be_data_push(vm, -2);
                                         be_pop(vm, 1);
+                                        fname = dir->getNextFileName();
                                     }
-                                } break;
+                                    break;
                                 case MPATH_ISDIR:
                                     // push bool belowthe only one to push an int, so do it here.
                                     res = dir->isDirectory();
