@@ -125,8 +125,8 @@ char *Get_esc_char(char *cp, char *esc_chr);
 #pragma message "script 24c256 file option used"
 #else
 
-#if EEP_SCRIPT_SIZE==SPECIAL_EEPMODE_SIZE || EEP_SCRIPT_SIZE==SPI_FLASH_2SEC_SIZE
-#if EEP_SCRIPT_SIZE==SPI_FLASH_2SEC_SIZE
+#if EEP_SCRIPT_SIZE==SPECIAL_EEPMODE_SIZE || EEP_SCRIPT_SIZE==SPI_FLASH_2SEC_SIZE || EEP_SCRIPT_SIZE==SPI_FLASH_SEC_SIZE
+#if EEP_SCRIPT_SIZE==SPI_FLASH_2SEC_SIZE || EEP_SCRIPT_SIZE==SPI_FLASH_SEC_SIZE
 #pragma message "internal special flash script buffer used"
 #else
 #pragma message "internal compressed eeprom script buffer used"
@@ -444,7 +444,7 @@ struct SCRIPT_SPI {
 #include <OneWire.h>
 #include <DS2480B.h>
 
-#ifndef MAX_DS_SENSORS             
+#ifndef MAX_DS_SENSORS
 #define MAX_DS_SENSORS 20
 #endif
 
@@ -612,6 +612,7 @@ int32_t extract_from_file(File *fp,  char *ts_from, char *ts_to, int8_t coffs, T
 char *eval_sub(char *lp, TS_FLOAT *fvar, char *rstr);
 uint32_t script_ow(uint8_t sel, uint32_t val);
 int32_t script_logfile_write(char *path, char *payload, uint32_t size);
+void script_sort_array(TS_FLOAT *array, uint16_t size);
 
 void ScriptEverySecond(void) {
 
@@ -721,7 +722,7 @@ char *script;
     }
     uint16_t maxvars = maxsvars + maxnvars;
     //AddLog(LOG_LEVEL_INFO, PSTR("Script: svar = %d, nvars = %d"), maxsvars, maxnvars);
-    
+
     // scan lines for >DEF
     uint16_t lines = 0;
     uint16_t nvars = 0;
@@ -866,15 +867,21 @@ char *script;
                 } else {
                     vtypes[vars].bits.is_filter = 0;
                 }
-                
+
                 *vnp_p++ = vnames_p;
                 while (lp < op) {
+                  if (*lp == ' ') {
+                    // no spaces
+                    lp++;
+                  } else {
                     *vnames_p++ = *lp++;
+                  }
                 }
                 *vnames_p++ = 0;
                 // init variable
                 op++;
                 while (*op == ' ') {
+                  // skip spaces
                   op++;
                 }
                 if (*op != '"') {
@@ -4269,6 +4276,15 @@ extern void W8960_SetGain(uint8_t sel, uint16_t value);
         }
 #endif // USE_SCRIPT_FATFS_EXT
 #endif
+
+#ifdef USE_ANGLE_FUNC
+        if (!strncmp_XP(lp, XPSTR("log("), 4)) {
+          lp = GetNumericArgument(lp + 4, OPER_EQU, &fvar, gv);
+          SCRIPT_SKIP_SPACES
+          fvar = log(fvar);
+          goto nfuncexit;
+        }
+#endif
         break;
       case 'm':
         if (!strncmp_XP(lp, XPSTR("med("), 4)) {
@@ -4431,7 +4447,7 @@ extern void W8960_SetGain(uint8_t sel, uint16_t value);
           goto nfuncexit;
         }
         break;
-#endif // USE_SCRIPT_ONEWIRE   
+#endif // USE_SCRIPT_ONEWIRE
 
       case 'p':
         if (!strncmp_XP(lp, XPSTR("pin["), 4)) {
@@ -4969,7 +4985,7 @@ extern char *SML_GetSVal(uint32_t index);
 
               Settings->serial_config = sconfig;
               uint8_t uart = 0;
-#ifdef ESP32              
+#ifdef ESP32
               uart = glob_script_mem.sp->getUart();
 #endif
               AddLog(LOG_LEVEL_INFO, PSTR("Serial port set to %s %d bit/s at rx=%d tx=%d rbu=%d uart=%d"), GetSerialConfig().c_str(), (uint32_t)br,  (uint32_t)rxpin, (uint32_t)txpin, (uint32_t)rxbsiz, uart);
@@ -5538,7 +5554,7 @@ extern char *SML_GetSVal(uint32_t index);
           uint32_t cycles;
           uint64_t accu = 0;
           char sbuffer[32];
-          
+
           GT911_Touch_Init(&Wire1, -1, -1, 960, 540);
 
           /*
@@ -5949,12 +5965,12 @@ char *getop(char *lp, uint8_t *operand) {
 #ifdef USE_SCRIPT_FATFS_EXT
 #ifdef USE_UFILESYS
 int32_t script_logfile_write(char *path, char *payload, uint32_t size) {
-  
+
       File rfd = ufsp->open(path, FS_FILE_APPEND);
       if (rfd == 0) {
         return -1;
       }
-      
+
       uint32_t fsize = rfd.size();
       // append string
       rfd.write((uint8_t*)payload, strlen(payload));
@@ -5978,7 +5994,7 @@ int32_t script_logfile_write(char *path, char *payload, uint32_t size) {
       wfd.close();
       ufsp->remove(path);
       ufsp->rename("/ltmp", path);
-      
+
   return fsize;
 }
 #endif // USE_UFILESYS
@@ -7431,7 +7447,7 @@ getnext:
                           default:
                               // error
                               break;
-                        } 
+                        }
                       } else {
                         switch (lastop) {
                           case OPER_EQU:
@@ -7476,7 +7492,7 @@ getnext:
                               break;
                         }
                       }
-                      
+
                       // var was changed
                       if (globvindex >= 0) SetChanged(globvindex);
 #ifdef USE_SCRIPT_GLOBVARS
@@ -7747,7 +7763,7 @@ ScriptOneWire *ow = &glob_script_mem.ow;
 
           ow->ts->begin(9600);
 
-#ifdef ESP8266          
+#ifdef ESP8266
           if (ow->ts->hardwareSerial()) {
             ClaimSerial();
 #ifdef ALLOW_OW_INVERT
@@ -7767,7 +7783,7 @@ ScriptOneWire *ow = &glob_script_mem.ow;
           }
 #endif
 #endif // ESP32
- 
+
           ow->dsh = new DS2480B(ow->ts);
           ow->dsh->begin();
         }
@@ -7862,7 +7878,7 @@ ScriptOneWire *ow = &glob_script_mem.ow;
       if (val < 1 || val > MAX_DS_SENSORS) {
         val = 1;
       }
-     
+
       if (ow->ds) {
         uint8_t data[9];
         ow->ds->reset();
@@ -8028,14 +8044,14 @@ bool Script_Close_Serial() {
 #endif //USE_SCRIPT_SERIAL
 
 
-void script_sort_array(float *array, uint16_t size) {
+void script_sort_array(TS_FLOAT *array, uint16_t size) {
   bool swapped;
   do {
     swapped = false;
     for (uint16_t i = 0; i < size - 1; ++i) {
       if (array[i] > array[i + 1]) {
         // swap
-        float tmp = array[i];
+        TS_FLOAT tmp = array[i];
         array[i] = array[i + 1];
         array[i + 1] = tmp;
         swapped = true;
@@ -8447,11 +8463,11 @@ void SaveScript(void) {
 #ifdef EEP_SCRIPT_SIZE
   // here we handle EEPROM modes
   if (glob_script_mem.FLAGS.eeprom == true) {
-    if (EEP_SCRIPT_SIZE < SPECIAL_EEPMODE_SIZE) {
+    if (EEP_SCRIPT_SIZE < SPECIAL_EEPMODE_SIZE && EEP_SCRIPT_SIZE != SPI_FLASH_SEC_SIZE) {
       EEP_WRITE(0, EEP_SCRIPT_SIZE, glob_script_mem.script_ram);
     } else {
-#if EEP_SCRIPT_SIZE==SPI_FLASH_2SEC_SIZE
-      alt_eeprom_writeBytes(0, SPI_FLASH_2SEC_SIZE, (uint8_t*)glob_script_mem.script_ram);
+#if EEP_SCRIPT_SIZE==SPI_FLASH_2SEC_SIZE || EEP_SCRIPT_SIZE==SPI_FLASH_SEC_SIZE
+      alt_eeprom_writeBytes(0, EEP_SCRIPT_SIZE, (uint8_t*)glob_script_mem.script_ram);
 #else
       uint8_t *ucs;
       ucs = (uint8_t*)calloc(SPI_FLASH_SEC_SIZE + 4, 1);
@@ -8536,7 +8552,7 @@ void SaveScriptEnd(void) {
     glob_script_mem.script_mem_size = 0;
  #ifdef USE_SCRIPT_SERIAL
     Script_Close_Serial();
-#endif   
+#endif
   }
 
   if (bitRead(Settings->rule_enabled, 0)) {
@@ -9273,7 +9289,7 @@ bool ScriptCommand(void) {
           break;
         case 8: // stop on error Off
         case 9: // On
-          bitWrite(Settings->rule_stop, index -1, XdrvMailbox.payload &1);
+          bitWrite(Settings->rule_stop, index - 1, XdrvMailbox.payload & 1);
           break;
 
 #ifdef xSCRIPT_STRIP_COMMENTS
@@ -10589,7 +10605,7 @@ const char *gc_str;
   }
 
   bool dogui = ((!mc && (*lin != '$')) || (mc == 'w' && (*lin != '$'))) && (!(specopt & WSO_FORCEMAIN));
-  
+
   if ((dogui && !(specopt & WSO_FORCEGUI)) || (!dogui && (specopt & WSO_FORCEGUI))) {
   //if ( ((!mc && (*lin != '$')) || (mc == 'w' && (*lin != '$'))) && (!(specopt & WSO_FORCEMAIN)) || (specopt & WSO_FORCEGUI)) {
     // normal web section
@@ -10768,7 +10784,7 @@ const char *gc_str;
       } else {
         WSContentSend_P(SCRIPT_MSG_RADIOa, center, tsiz, pulabel);
       }
-      
+
       // get pu labels
       uint8_t index = 1;
       while (*lp) {
@@ -11856,7 +11872,7 @@ int32_t call2pwl(const char *url) {
   if (*url == 'N') {
     url++;
     cookie = "";
-  } 
+  }
   String result = powerwall.GetRequest(String(url), cookie);
   //AddLog(LOG_LEVEL_INFO, PSTR("PWL: result: %s"), result.c_str());
 
@@ -12494,7 +12510,8 @@ bool Xdrv10(uint32_t function)
 
   switch (function) {
     //case FUNC_PRE_INIT:
-    case FUNC_INIT:
+    //case FUNC_INIT:
+    case FUNC_SETUP_RING1:  // We need to setup SCRIPT before call to ScriptLoadSection()
 
       //bitWrite(Settings->rule_enabled, 0, 0); // >>>>>>>>>>>
 #ifndef NO_SCRIPT_STOP_ON_ERROR
@@ -12551,7 +12568,7 @@ bool Xdrv10(uint32_t function)
       if (EEP_INIT(EEP_SCRIPT_SIZE)) {
           // found 32kb eeprom,
           char *script;
-#if EEP_SCRIPT_SIZE<SPECIAL_EEPMODE_SIZE
+#if EEP_SCRIPT_SIZE<SPECIAL_EEPMODE_SIZE && EEP_SCRIPT_SIZE!=SPI_FLASH_SEC_SIZE
             script = (char*)calloc(EEP_SCRIPT_SIZE + 4, 1);
             if (!script) break;
             glob_script_mem.script_ram = script;
@@ -12563,16 +12580,16 @@ bool Xdrv10(uint32_t function)
             script[EEP_SCRIPT_SIZE - 1] = 0;
 #else
             uint8_t *ucs;
-#if EEP_SCRIPT_SIZE==SPI_FLASH_2SEC_SIZE
-            ucs = (uint8_t*)calloc(SPI_FLASH_2SEC_SIZE + 4, 1);
+#if EEP_SCRIPT_SIZE==SPI_FLASH_2SEC_SIZE || EEP_SCRIPT_SIZE==SPI_FLASH_SEC_SIZE
+            ucs = (uint8_t*)calloc(EEP_SCRIPT_SIZE + 4, 1);
             if (!ucs) break;
-            alt_eeprom_readBytes(0, SPI_FLASH_2SEC_SIZE, ucs);
+            alt_eeprom_readBytes(0, EEP_SCRIPT_SIZE, ucs);
             if (*ucs == 0xff) {
-              memset(ucs, SPI_FLASH_2SEC_SIZE, 0);
+              memset(ucs, EEP_SCRIPT_SIZE, 0);
             }
-            ucs[SPI_FLASH_2SEC_SIZE- 1] = 0;
+            ucs[EEP_SCRIPT_SIZE - 1] = 0;
             glob_script_mem.script_ram = (char*)ucs;
-            glob_script_mem.script_size = SPI_FLASH_2SEC_SIZE;
+            glob_script_mem.script_size = EEP_SCRIPT_SIZE;
 
 #else
             ucs = (uint8_t*)calloc(SPI_FLASH_SEC_SIZE + 4, 1);
@@ -12630,9 +12647,9 @@ bool Xdrv10(uint32_t function)
 #endif //USE_BUTTON_EVENT
 
       // a valid script MUST start with >D
-      if (glob_script_mem.script_ram[0]!='>' && glob_script_mem.script_ram[1]!='D') {
+      if (glob_script_mem.script_ram[0] != '>' && glob_script_mem.script_ram[1] != 'D') {
         // clr all
-        memset(glob_script_mem.script_ram, 0 ,glob_script_mem.script_size);
+        memset(glob_script_mem.script_ram, 0, glob_script_mem.script_size);
 #ifdef PRECONFIGURED_SCRIPT
         strcpy_P(glob_script_mem.script_ram, PSTR(PRECONFIGURED_SCRIPT));
 #else
@@ -12655,8 +12672,8 @@ bool Xdrv10(uint32_t function)
 
       if (bitRead(Settings->rule_enabled, 0)) Init_Scripter();
 
-    //  break;
-    //case FUNC_INIT:
+      break;
+    case FUNC_INIT:
       if (bitRead(Settings->rule_enabled, 0)) {
         set_callbacks();
         Run_Scripter1(">B\n", 3, 0);
