@@ -24,6 +24,7 @@ import matter
 # dummy declaration for solidification
 class Matter_Plugin_Device end
 
+#@ solidify:Matter_Plugin_Bridge_HTTP.GetOptionReader,weak
 #@ solidify:Matter_Plugin_Bridge_HTTP,weak
 
 class Matter_Plugin_Bridge_HTTP : Matter_Plugin_Device
@@ -52,7 +53,6 @@ class Matter_Plugin_Bridge_HTTP : Matter_Plugin_Device
   #############################################################
   # Constructor
   def init(device, endpoint, arguments)
-    import string
     super(self).init(device, endpoint, arguments)
 
     var addr = arguments.find(self.ARG_HTTP)
@@ -106,7 +106,6 @@ class Matter_Plugin_Bridge_HTTP : Matter_Plugin_Device
   # arg can be nil, in this case `cmd` has it all
   def call_remote_sync(cmd, arg)
     # if !self.http_remote  return nil  end
-    import string
     import json
 
     var retry = 2         # try 2 times if first failed
@@ -183,8 +182,32 @@ class Matter_Plugin_Bridge_HTTP : Matter_Plugin_Device
 
     # ====================================================================================================
     if   cluster == 0x0039              # ========== Bridged Device Basic Information 9.13 p.485 ==========
+      import string
 
-      if   attribute == 0x0011          #  ---------- Reachable / bool ----------
+      if   attribute == 0x0003         #  ---------- ProductName / string ----------
+        var name = self.http_remote.get_info().find("name")
+        if name
+          return TLV.create_TLV(TLV.UTF1, name)
+        else
+          return TLV.create_TLV(TLV.NULL, nil)
+        end
+      elif attribute == 0x000A          #  ---------- SoftwareVersionString / string ----------
+        var version_full = self.http_remote.get_info().find("version")
+        if version_full
+          var version_end = string.find(version_full, '(')
+          if version_end > 0    version_full = version_full[0..version_end - 1]   end
+          return TLV.create_TLV(TLV.UTF1, version_full)
+        else
+          return TLV.create_TLV(TLV.NULL, nil)
+        end
+      elif attribute == 0x000F || attribute == 0x0012          #  ---------- SerialNumber || UniqueID / string ----------
+        var mac = self.http_remote.get_info().find("mac")
+        if mac
+          return TLV.create_TLV(TLV.UTF1, mac)
+        else
+          return TLV.create_TLV(TLV.NULL, nil)
+        end
+      elif attribute == 0x0011          #  ---------- Reachable / bool ----------
         # self.is_reachable_lazy_sync()   # Not needed anymore
         return TLV.create_TLV(TLV.BOOL, self.http_remote.reachable)     # TODO find a way to do a ping
       else
@@ -209,9 +232,18 @@ class Matter_Plugin_Bridge_HTTP : Matter_Plugin_Device
   # web_values
   #
   # Show values of the remote device as HTML
+  static var PREFIX = "| <i>%s</i> "
   def web_values()
     import webserver
-    webserver.content_send("| &lt;-- (" + self.NAME + ") --&gt;")
+    self.web_values_prefix()
+    webserver.content_send("&lt;-- (" + self.NAME + ") --&gt;")
+  end
+
+  # Show prefix before web value
+  def web_values_prefix()
+    import webserver
+    var name = self.get_name()
+    webserver.content_send(format(self.PREFIX, name ? webserver.html_escape(name) : ""))
   end
 
   # Show on/off value as html
@@ -219,5 +251,52 @@ class Matter_Plugin_Bridge_HTTP : Matter_Plugin_Device
     var onoff_html = (onoff != nil ? (onoff ? "<b>On</b>" : "Off") : "")
     return onoff_html
   end
+
+  #############################################################
+  # GetOption reader to decode `SetOption<x>` values from `Status 3`
+  static class GetOptionReader
+    var flag, flag2, flag3, flag4, flag5, flag6
+
+    def init(j)
+      if j == nil  raise "value_error", "invalid json"  end
+      var so = j['SetOption']
+      self.flag  = bytes().fromhex(so[0]).reverse()
+      self.flag2 = bytes().fromhex(so[1])
+      self.flag3 = bytes().fromhex(so[2]).reverse()
+      self.flag4 = bytes().fromhex(so[3]).reverse()
+      self.flag5 = bytes().fromhex(so[4]).reverse()
+      self.flag6 = bytes().fromhex(so[5]).reverse()
+    end
+    def getoption(x)
+      if   x < 32  # SetOption0 .. 31 = Settings->flag
+        return self.flag.getbits(x, 1)
+      elif x < 50  # SetOption32 .. 49 = Settings->param
+        return self.flag2.get(x - 32, 1)
+      elif x < 82  # SetOption50 .. 81 = Settings->flag3
+        return self.flag3.getbits(x - 50, 1)
+      elif x < 114 # SetOption82 .. 113 = Settings->flag4
+        return self.flag4.getbits(x - 82, 1)
+      elif x < 146 # SetOption114 .. 145 = Settings->flag5
+        return self.flag5.getbits(x - 114, 1)
+      elif x < 178 # SetOption146 .. 177 = Settings->flag6
+        return self.flag6.getbits(x - 146, 1)
+      end
+    end
+  end
+
+  #- Examples
+
+  import json
+
+  var p = '{"SerialLog":2,"WebLog":3,"MqttLog":0,"SysLog":0,"LogHost":"","LogPort":514,"SSId":["Livebox-781A",""],"TelePeriod":300,"Resolution":"558180C0","SetOption":["00008009","2805C80001800600003C5A0A192800000000","00000080","00006000","00006000","00000020"]}'
+  var j = json.load(p)
+
+  var gor = matter.Plugin_Bridge_HTTP.GetOptionReader(j)
+  assert(gor.getoption(151) == 1)
+  assert(gor.getoption(150) == 0)
+  assert(gor.getoption(32) == 40)
+  assert(gor.getoption(37) == 128)
+
+  -#
 end
 matter.Plugin_Bridge_HTTP = Matter_Plugin_Bridge_HTTP

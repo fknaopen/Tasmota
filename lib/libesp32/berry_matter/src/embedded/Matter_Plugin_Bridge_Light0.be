@@ -30,7 +30,7 @@ class Matter_Plugin_Bridge_Light0 : Matter_Plugin_Bridge_HTTP
   static var TYPE = "http_light0"                   # name of the plug-in in json
   static var NAME = "Light 0 On"          # display name of the plug-in
   static var ARG  = "relay"                         # additional argument name (or empty if none)
-  static var ARG_HINT = "Enter Power<x> number"
+  static var ARG_HINT = "Power<x> number"
   static var ARG_TYPE = / x -> int(x)               # function to convert argument to the right type
   # static var UPDATE_TIME = 3000                     # update every 3s
   # static var UPDATE_CMD = "Status 11"               # command to send for updates
@@ -90,7 +90,6 @@ class Matter_Plugin_Bridge_Light0 : Matter_Plugin_Bridge_HTTP
   # read an attribute
   #
   def read_attribute(session, ctx)
-    import string
     var TLV = matter.TLV
     var cluster = ctx.cluster
     var attribute = ctx.attribute
@@ -144,8 +143,18 @@ class Matter_Plugin_Bridge_Light0 : Matter_Plugin_Bridge_HTTP
   # Show values of the remote device as HTML
   def web_values()
     import webserver
-    import string
-    webserver.content_send(string.format("| Light %s", self.web_value_onoff(self.shadow_onoff)))
+    self.web_values_prefix()        # display '| ' and name if present
+    webserver.content_send(format("%s", self.web_value_onoff(self.shadow_onoff)))
+  end
+
+  # Show prefix before web value
+  def web_values_prefix()
+    import webserver
+    var name = self.get_name()
+    if !name
+      name = "Power" + str(self.tasmota_relay_index)
+    end
+    webserver.content_send(format(self.PREFIX, name ? webserver.html_escape(name) : ""))
   end
 
 end

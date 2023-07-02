@@ -30,7 +30,7 @@ class Matter_Plugin_Bridge_Sensor_Contact : Matter_Plugin_Bridge_HTTP
   static var TYPE = "http_contact"                  # name of the plug-in in json
   static var NAME = "Contact"                       # display name of the plug-in
   static var ARG  = "switch"                        # additional argument name (or empty if none)
-  static var ARG_HINT = "Enter Switch<x> number"
+  static var ARG_HINT = "Switch<x> number"
   static var ARG_TYPE = / x -> int(x)               # function to convert argument to the right type
   static var UPDATE_TIME = 5000                     # update every 5s
   static var UPDATE_CMD = "Status 8"                # command to send for updates
@@ -72,7 +72,6 @@ class Matter_Plugin_Bridge_Sensor_Contact : Matter_Plugin_Bridge_HTTP
   # read an attribute
   #
   def read_attribute(session, ctx)
-    import string
     var TLV = matter.TLV
     var cluster = ctx.cluster
     var attribute = ctx.attribute
@@ -102,9 +101,18 @@ class Matter_Plugin_Bridge_Sensor_Contact : Matter_Plugin_Bridge_HTTP
   # Show values of the remote device as HTML
   def web_values()
     import webserver
-    import string
-    webserver.content_send(string.format("| Contact%i %s", self.tasmota_switch_index, self.web_value_onoff(self.shadow_contact)))
+    self.web_values_prefix()        # display '| ' and name if present
+    webserver.content_send(format("Contact%i %s", self.tasmota_switch_index, self.web_value_onoff(self.shadow_contact)))
   end
 
+  # Show prefix before web value
+  def web_values_prefix()
+    import webserver
+    var name = self.get_name()
+    if !name
+      name = "Switch" + str(self.tasmota_switch_index)
+    end
+    webserver.content_send(format(self.PREFIX, name ? webserver.html_escape(name) : ""))
+  end
 end
 matter.Plugin_Bridge_Sensor_Contact = Matter_Plugin_Bridge_Sensor_Contact

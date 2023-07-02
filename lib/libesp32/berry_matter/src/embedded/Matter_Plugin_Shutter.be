@@ -31,7 +31,7 @@ class Matter_Plugin_Shutter : Matter_Plugin_Device
   static var NAME = "Shutter"                       # display name of the plug-in
   static var ARG  = "shutter"                       # additional argument name (or empty if none)
   static var ARG_TYPE = / x -> int(x)               # function to convert argument to the right type
-  static var ARG_HINT = "Enter Relay<x> number"
+  static var ARG_HINT = "Relay<x> number"
   static var CLUSTERS  = {
     # 0x001D: inherited                             # Descriptor Cluster 9.5 p.453
     # 0x0003: inherited                             # Identify 1.2 p.16
@@ -94,7 +94,6 @@ class Matter_Plugin_Shutter : Matter_Plugin_Device
   # read an attribute
   #
   def read_attribute(session, ctx)
-    import string
     var TLV = matter.TLV
     var cluster = ctx.cluster
     var attribute = ctx.attribute
@@ -197,11 +196,10 @@ class Matter_Plugin_Shutter : Matter_Plugin_Device
   # parse the output from `ShutterPosition`
   # Ex: `{"Shutter1":{"Position":50,"Direction":0,"Target":50,"Tilt":30}}`
   def parse_sensors(payload)
-    import string
     var k = "Shutter" + str(self.tasmota_shutter_index + 1)
     if payload.contains(k)
       var v = payload[k]
-      # tasmota.log(string.format("MTR: getting shutter values(%i): %s", self.endpoint, str(v)), 2)
+      # tasmota.log(format("MTR: getting shutter values(%i): %s", self.endpoint, str(v)), 2)
       # Position
       var val_pos = v.find("Position")
       if val_pos != nil
