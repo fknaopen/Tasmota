@@ -18,7 +18,8 @@
 */
 
 #ifdef ESP32
-#ifdef USE_WEBCAM_TASK
+#ifdef USE_WEBCAM
+#ifndef USE_WEBCAM_LEGACY
 
 #define WC_USE_RGB_DECODE
 
@@ -3935,5 +3936,6 @@ bool Xdrv99(uint32_t function) {
   return result;
 }
 
+#endif  // !USE_WEBCAM_LEGACY
 #endif  // USE_WEBCAM
 #endif  // ESP32
