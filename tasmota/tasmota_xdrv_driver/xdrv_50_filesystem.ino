@@ -738,7 +738,7 @@ void UFSRun(void) {
 #ifdef USE_WEBSERVER
 
 const char UFS_WEB_DIR[] PROGMEM =
-  "<p><form action='" "ufsd" "' method='get'><button>" "%s" "</button></form></p>";
+  "<p><form action='ufsd' method='get'><input type='hidden' name='download' value='%s' /> <button>%s</button></form></p>";
 
 const char UFS_FORM_FILE_UPLOAD[] PROGMEM =
   "<div id='f1' name='f1' style='display:block;'>"
@@ -762,7 +762,7 @@ const char UFS_FORM_SDC_DIRa[] PROGMEM =
 const char UFS_FORM_SDC_DIRc[] PROGMEM =
   "</div>";
 const char UFS_FORM_FILE_UPGb[] PROGMEM =
-  "<form method='get' action='ufse'><input type='hidden' file='" D_NEW_FILE "'>"
+  "<form method='get' action='ufse'><input type='hidden' name='file' value='%s/" D_NEW_FILE "'>"
   "<button type='submit'>" D_CREATE_NEW_FILE "</button></form>";
 const char UFS_FORM_FILE_UPGb1[] PROGMEM =
   "<input type='checkbox' id='shf' onclick='sf(eb(\"shf\").checked);' name='shf'>" D_SHOW_HIDDEN_FILES "</input>";
@@ -785,7 +785,7 @@ const char UFS_FORM_SDC_HREF[] PROGMEM =
 #ifdef GUI_TRASH_FILE
 const char UFS_FORM_SDC_HREFdel[] PROGMEM =
   //"<a href=ufsd?delete=%s/%s>&#128465;</a>"; // 🗑️
-  "<a href='ufsd?delete=%s/%s' onclick=\"return confirm('" D_CONFIRM_FILE_DEL "')\">&#128293;</a>"; // 🔥
+  "<a href='ufsd?delete=%s/%s&download=%s' onclick=\"return confirm('" D_CONFIRM_FILE_DEL "')\">&#128293;</a>"; // 🔥
 #endif // GUI_TRASH_FILE
 
 #ifdef GUI_EDIT_FILE
@@ -869,7 +869,7 @@ void UfsDirectory(void) {
   }
   WSContentSend_P(UFS_FORM_SDC_DIRc);
 #ifdef GUI_EDIT_FILE
-  WSContentSend_P(UFS_FORM_FILE_UPGb);
+  WSContentSend_P(UFS_FORM_FILE_UPGb, ufs_path);
 #endif
   if (!isSDC()) {
     WSContentSend_P(UFS_FORM_FILE_UPGb1);
@@ -953,7 +953,7 @@ void UfsListDir(char *path, uint8_t depth) {
         if (entry.isDirectory()) {
           ext_snprintf_P(npath, sizeof(npath), UFS_FORM_SDC_HREF, ppe, epe);
           WSContentSend_P(UFS_FORM_SDC_DIRd, npath, ep, name);
-#ifndef UFILESYS_NO_RECURSE_GUI
+#ifdef UFILESYS_RECURSEFOLDERS_GUI
           uint8_t plen = strlen(path);
           if (plen > 1) {
             strcat(path, "/");
@@ -964,8 +964,8 @@ void UfsListDir(char *path, uint8_t depth) {
 #endif          
         } else {
   #ifdef GUI_TRASH_FILE
-          char delpath[128];
-          ext_snprintf_P(delpath, sizeof(delpath), UFS_FORM_SDC_HREFdel, ppe, epe);
+          char delpath[128+UFS_FILENAME_SIZE];
+          ext_snprintf_P(delpath, sizeof(delpath), UFS_FORM_SDC_HREFdel, ppe, epe, ppe);
   #else
           char delpath[2];
           delpath[0]=0;
@@ -1197,7 +1197,19 @@ void UfsEditor(void) {
   }
 
   WSContentSend_P(HTTP_EDITOR_FORM_END);
-  WSContentSend_P(UFS_WEB_DIR, PSTR(D_MANAGE_FILE_SYSTEM));
+  for (int i = strlen(fname)-1; i >= 0; i--){
+    if (fname[i] == '/'){
+      fname[i] = 0;
+      break;
+    }
+    fname[i] = 0;
+  }
+  if (!fname[0]){
+    fname[0] = '/';
+    fname[1] = 0;
+  }
+
+  WSContentSend_P(UFS_WEB_DIR, fname, PSTR(D_MANAGE_FILE_SYSTEM));
   WSContentStop();
 }
 
@@ -1251,7 +1263,22 @@ void UfsEditorUpload(void) {
 
   fp.close();
 
-  Webserver->sendHeader(F("Location"),F("/ufsu"));
+  for (int i = strlen(fname)-1; i >= 0; i--){
+    if (fname[i] == '/'){
+      fname[i] = 0;
+      break;
+    }
+    fname[i] = 0;
+  }
+  if (!fname[0]){
+    fname[0] = '/';
+    fname[1] = 0;
+  }
+
+  char t[20+UFS_FILENAME_SIZE] = "/ufsu?download=";
+  strcat(t, fname);
+  Webserver->sendHeader(F("Location"), t);
+
   Webserver->send(303);
 }
 
@@ -1292,7 +1319,7 @@ bool Xdrv50(uint32_t function) {
         if (XdrvMailbox.index) {
           XdrvMailbox.index++;
         } else {
-          WSContentSend_PD(UFS_WEB_DIR, PSTR(D_MANAGE_FILE_SYSTEM));
+          WSContentSend_PD(UFS_WEB_DIR, "/", PSTR(D_MANAGE_FILE_SYSTEM));
         }
       }
       break;
