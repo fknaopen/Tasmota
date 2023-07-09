@@ -146,6 +146,36 @@ void UfsInit(void) {
   }
 }
 
+// simple put a zero at last '/'
+// modifies input string
+char *folderOnly(char *fname){
+  for (int i = strlen(fname)-1; i >= 0; i--){
+    if (fname[i] == '/'){
+      fname[i] = 0;
+      break;
+    }
+    fname[i] = 0;
+  }
+  if (!fname[0]){
+    fname[0] = '/';
+    fname[1] = 0;
+  }
+  return fname;
+}
+
+// returns everything after last '/' of whiole input if no '/'
+char *fileOnly(char *fname){
+  char *cp = fname;
+  for (uint32_t cnt = strlen(fname); cnt >= 0; cnt--) {
+    if (fname[cnt] == '/') {
+      cp = &fname[cnt + 1];
+      break;
+    }
+  }
+  return cp;
+}
+
+
 #ifdef USE_SDCARD
 void UfsCheckSDCardInit(void) {
   // Try SPI mode first
@@ -740,6 +770,13 @@ void UFSRun(void) {
 const char UFS_WEB_DIR[] PROGMEM =
   "<p><form action='ufsd' method='get'><input type='hidden' name='download' value='%s' /> <button>%s</button></form></p>";
 
+const char UFS_CURRDIR[] PROGMEM = 
+  "<p>%s: %s</p>";
+
+#ifndef D_CURR_DIR
+  #define D_CURR_DIR "Folder"
+#endif
+
 const char UFS_FORM_FILE_UPLOAD[] PROGMEM =
   "<div id='f1' name='f1' style='display:block;'>"
   "<fieldset><legend><b>&nbsp;" D_MANAGE_FILE_SYSTEM "&nbsp;</b></legend>";
@@ -778,7 +815,7 @@ const char UFS_FORM_SDC_DIR_HIDDABLE[] PROGMEM =
 const char UFS_FORM_SDC_DIRd[] PROGMEM =
   "<pre><a href='%s' file='%s'>%s</a></pre>";
 const char UFS_FORM_SDC_DIRb[] PROGMEM =
-  "<pre%s><a href='%s' file='%s'>%s</a> %s %8d %s %s</pre>";
+  "<pre%s><a href='%s' file='%s'>%s</a> %19s %8d %s %s</pre>";
 const char UFS_FORM_SDC_HREF[] PROGMEM =
   "ufsd?download=%s/%s";
 
@@ -814,8 +851,37 @@ void UfsDirectory(void) {
   AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_HTTP D_MANAGE_FILE_SYSTEM));
 
   uint8_t depth = 0;
+  uint8_t isdir = 0;
 
   strcpy(ufs_path, "/");
+
+  if (Webserver->hasArg(F("dir"))) {
+    String stmp = Webserver->arg(F("dir"));
+    ufs_dir = atoi(stmp.c_str());
+  }
+
+  if (ufs_dir == 1) {
+    dfsp = ufsp;
+  } else {
+    if (ffsp) {
+      dfsp = ffsp;
+    }
+  }
+
+  if (Webserver->hasArg(F("delete"))) {
+    String stmp = Webserver->arg(F("delete"));
+    char *cp = (char*)stmp.c_str();
+    File download_file = dfsp->open(cp, UFS_FILE_READ);
+    if (download_file) {
+      if (download_file.isDirectory()) {
+        download_file.close();
+        dfsp->rmdir(cp);
+      } else {
+        download_file.close();
+        dfsp->remove(cp);
+      }
+    }
+  }
 
   if (Webserver->hasArg(F("download"))) {
     String stmp = Webserver->arg(F("download"));
@@ -823,27 +889,10 @@ void UfsDirectory(void) {
     if (UfsDownloadFile(cp)) {
       // is directory
       strcpy(ufs_path, cp);
+      isdir = 1;
     } else {
       return;
     }
-  }
-
-  if (Webserver->hasArg(F("dir"))) {
-    String stmp = Webserver->arg(F("dir"));
-    ufs_dir = atoi(stmp.c_str());
-    if (ufs_dir == 1) {
-      dfsp = ufsp;
-    } else {
-      if (ffsp) {
-        dfsp = ffsp;
-      }
-    }
-  }
-
-  if (Webserver->hasArg(F("delete"))) {
-    String stmp = Webserver->arg(F("delete"));
-    char *cp = (char*)stmp.c_str();
-    dfsp->remove(cp);
   }
 
   WSContentStart_P(PSTR(D_MANAGE_FILE_SYSTEM));
@@ -862,6 +911,13 @@ void UfsDirectory(void) {
   WSContentSend_P(UFS_FORM_FILE_UPGc2);
 
   WSContentSend_P(UFS_FORM_FILE_UPG, PSTR(D_SCRIPT_UPLOAD));
+
+  if (isdir){
+    // if a folder, show 'folder: xxx' if not '/'
+    if (ufs_path[0] != '/' || strlen(ufs_path) != 1){
+      WSContentSend_P(UFS_CURRDIR, PSTR(D_CURR_DIR), ufs_path);
+    }
+  }
 
   WSContentSend_P(UFS_FORM_SDC_DIRa);
   if (ufs_type) {
@@ -918,6 +974,13 @@ void UfsListDir(char *path, uint8_t depth) {
     }
     char *ep;
     while (true) {
+      WiFiClient client = Webserver->client();
+      // abort if the client disconnected
+      // if there is a huge folder, then this gives a way out by refresh of browser
+      if (!client.connected()){
+        break;
+      }
+
       File entry = dir.openNextFile();
       if (!entry) {
         break;
@@ -950,9 +1013,18 @@ void UfsListDir(char *path, uint8_t depth) {
         const char* ppe = pp_escaped_string.c_str();    // this can't be merged on a single line otherwise the String object can be freed
         const char* epe = ep_escaped_string.c_str();
         sprintf(cp, format, ep);
+#ifdef GUI_TRASH_FILE
+        char delpath[128+UFS_FILENAME_SIZE];
+        ext_snprintf_P(delpath, sizeof(delpath), UFS_FORM_SDC_HREFdel, ppe, epe, ppe[0]?ppe:"/");
+#else
+        char delpath[2] = " ";
+#endif // GUI_TRASH_FILE
         if (entry.isDirectory()) {
           ext_snprintf_P(npath, sizeof(npath), UFS_FORM_SDC_HREF, ppe, epe);
-          WSContentSend_P(UFS_FORM_SDC_DIRd, npath, ep, name);
+
+          WSContentSend_P(UFS_FORM_SDC_DIRb, hiddable ? UFS_FORM_SDC_DIR_HIDDABLE : UFS_FORM_SDC_DIR_NORMAL, npath, epe,
+                          HtmlEscape(name).c_str(), "", 0, delpath, " ");
+          //WSContentSend_P(UFS_FORM_SDC_DIRd, npath, ep, name);
 #ifdef UFILESYS_RECURSEFOLDERS_GUI
           uint8_t plen = strlen(path);
           if (plen > 1) {
@@ -963,13 +1035,6 @@ void UfsListDir(char *path, uint8_t depth) {
           path[plen] = 0;
 #endif          
         } else {
-  #ifdef GUI_TRASH_FILE
-          char delpath[128+UFS_FILENAME_SIZE];
-          ext_snprintf_P(delpath, sizeof(delpath), UFS_FORM_SDC_HREFdel, ppe, epe, ppe);
-  #else
-          char delpath[2];
-          delpath[0]=0;
-  #endif // GUI_TRASH_FILE
   #ifdef GUI_EDIT_FILE
           char editpath[128];
           ext_snprintf_P(editpath, sizeof(editpath), UFS_FORM_SDC_HREFedit, ppe, epe);
@@ -989,11 +1054,15 @@ void UfsListDir(char *path, uint8_t depth) {
 }
 
 #ifdef ESP32
-#define ESP32_DOWNLOAD_TASK
+// this actually does not work reliably, as the 
+// webserver can close the connection before the download task completes
+//#define ESP32_DOWNLOAD_TASK
 #endif // ESP32
 
 uint8_t UfsDownloadFile(char *file) {
   File download_file;
+
+  AddLog(LOG_LEVEL_INFO, PSTR("UFS: File '%s' download"), file);
 
   if (!dfsp->exists(file)) {
     AddLog(LOG_LEVEL_INFO, PSTR("UFS: File '%s' not found"), file);
@@ -1007,6 +1076,7 @@ uint8_t UfsDownloadFile(char *file) {
   }
 
   if (download_file.isDirectory()) {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("UFS: File '%s' to download is directory"), file);
     download_file.close();
     return 1;
   }
@@ -1019,13 +1089,7 @@ uint8_t UfsDownloadFile(char *file) {
   Webserver->setContentLength(flen);
 
   char attachment[100];
-  char *cp;
-  for (uint32_t cnt = strlen(file); cnt >= 0; cnt--) {
-    if (file[cnt] == '/') {
-      cp = &file[cnt + 1];
-      break;
-    }
-  }
+  char *cp = fileOnly(file);
   snprintf_P(attachment, sizeof(attachment), PSTR("attachment; filename=%s"), cp);
   Webserver->sendHeader(F("Content-Disposition"), attachment);
   WSSend(200, CT_APP_STREAM, "");
@@ -1054,6 +1118,10 @@ uint8_t UfsDownloadFile(char *file) {
 #endif // ESP32_DOWNLOAD_TASK
 
 
+
+// to make this work I thing you wouold need to duplicate the client 
+// BEFORE starting the task, so that the webserver does not close it's
+// copy of the client.
 #ifdef ESP32_DOWNLOAD_TASK
   download_file.close();
 
@@ -1084,20 +1152,18 @@ void download_task(void *path) {
   WiFiClient download_Client;
   char *file = (char*) path;
 
+  AddLog(LOG_LEVEL_DEBUG, PSTR("UFS: ESP32 File '%s' to download"), file);
+
   download_file = dfsp->open(file, UFS_FILE_READ);
   uint32_t flen = download_file.size();
+
+  AddLog(LOG_LEVEL_DEBUG, PSTR("UFS: len %d to download"), flen);
 
   download_Client = Webserver->client();
   Webserver->setContentLength(flen);
 
   char attachment[100];
-  char *cp;
-  for (uint32_t cnt = strlen(file); cnt >= 0; cnt--) {
-    if (file[cnt] == '/') {
-      cp = &file[cnt + 1];
-      break;
-    }
-  }
+  char *cp = fileOnly(file);
   //snprintf_P(attachment, sizeof(attachment), PSTR("download file '%s' as '%s'"), file, cp);
   //Webserver->sendHeader(F("X-Tasmota-Debug"), attachment);
   snprintf_P(attachment, sizeof(attachment), PSTR("attachment; filename=%s"), cp);
@@ -1119,6 +1185,7 @@ void download_task(void *path) {
   UfsData.download_busy = false;
   vTaskDelete( NULL );
   free(path);
+  AddLog(LOG_LEVEL_DEBUG, PSTR("UFS: esp32 sent file"));
 }
 #endif //  ESP32_DOWNLOAD_TASK
 
@@ -1197,18 +1264,7 @@ void UfsEditor(void) {
   }
 
   WSContentSend_P(HTTP_EDITOR_FORM_END);
-  for (int i = strlen(fname)-1; i >= 0; i--){
-    if (fname[i] == '/'){
-      fname[i] = 0;
-      break;
-    }
-    fname[i] = 0;
-  }
-  if (!fname[0]){
-    fname[0] = '/';
-    fname[1] = 0;
-  }
-
+  folderOnly(fname);
   WSContentSend_P(UFS_WEB_DIR, fname, PSTR(D_MANAGE_FILE_SYSTEM));
   WSContentStop();
 }
@@ -1244,6 +1300,23 @@ void UfsEditorUpload(void) {
     return;
   }
 
+  // recursively create folder(s)
+  char tmp[UFS_FILENAME_SIZE];
+  char folder[UFS_FILENAME_SIZE] = "";
+  strcpy(tmp, fname);
+  // zap file name off the end
+  folderOnly(tmp);
+  char *tf = strtok(tmp, "/");
+  while(tf){
+    if (*tf){
+      strcat(folder, "/");
+      strcat(folder, tf);
+    }
+    // we don;t care if it fails - it may already exist.
+    dfsp->mkdir(folder);
+    tf = strtok(nullptr, "/");
+  }
+
   File fp = dfsp->open(fname, "w");
   if (!fp) {
     Web.upload_error = 1;
@@ -1263,22 +1336,11 @@ void UfsEditorUpload(void) {
 
   fp.close();
 
-  for (int i = strlen(fname)-1; i >= 0; i--){
-    if (fname[i] == '/'){
-      fname[i] = 0;
-      break;
-    }
-    fname[i] = 0;
-  }
-  if (!fname[0]){
-    fname[0] = '/';
-    fname[1] = 0;
-  }
-
+  // zap file name off the end
+  folderOnly(fname);
   char t[20+UFS_FILENAME_SIZE] = "/ufsu?download=";
   strcat(t, fname);
   Webserver->sendHeader(F("Location"), t);
-
   Webserver->send(303);
 }
 
